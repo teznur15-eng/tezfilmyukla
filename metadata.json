@@ -1,0 +1,6 @@
+{
+  "name": "MovieBot & Userbot Manager",
+  "description": "Asilmedia va UzMovie kinolarini avto yuklash va Telegram Userbot orqali 50MB+ katta fayllarni uzatish boti",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
