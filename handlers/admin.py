@@ -211,6 +211,16 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👋 Yangi xush kelibsiz xabarini yozing:",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_settings")]])
             )
+        elif data == "adm_set_start_photo":
+            context.user_data["adm_state"] = "set_start_photo"
+            cur = get_setting("start_photo", "")
+            await q.edit_message_text(
+                f"🖼 <b>Start uchun Banner Rasm (URL yoki photo_id)</b>\n\n"
+                f"Joriy: <code>{esc(cur) or 'Default rasm'}</code>\n\n"
+                f"Rasm havolasini (https://...) yuboring yoki o'chirish uchun <code>0</code> deb yozing:",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_settings")]])
+            )
         elif data == "adm_maintenance_on":
             set_setting("maintenance_mode","1")
             await q.answer("🔧 Texnik rejim yoqildi!", show_alert=True)
@@ -348,6 +358,12 @@ async def admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("welcome_message", text)
         context.user_data.pop("adm_state", None)
         await msg.reply_text("✅ Xush kelibsiz xabari o'zgartirildi.")
+
+    elif state == "set_start_photo":
+        val = "" if text == "0" else text
+        set_setting("start_photo", val)
+        context.user_data.pop("adm_state", None)
+        await msg.reply_text("✅ Start uchun rasm sozlamasi yangilandi!")
 
     elif state.startswith("resolve_"):
         try:
@@ -612,15 +628,18 @@ async def _settings(q):
     free  = get_setting("free_downloads","1")
     maint = get_setting("maintenance_mode","0")
     botun = get_setting("bot_username","—")
+    sphoto = get_setting("start_photo", "")
     maint_icon = "🔴 Yoqilgan" if maint == "1" else "🟢 O'chirilgan"
     await q.edit_message_text(
         f"⚙️ <b>Sozlamalar</b>\n\n"
         f"🆓 Bepul limit: <b>{free} ta</b>\n"
+        f"🖼 Start Rasmi: <b>{'Sozlingan' if sphoto else 'Default banner'}</b>\n"
         f"🔧 Texnik rejim: <b>{maint_icon}</b>\n"
         f"🤖 Bot username: <b>@{esc(botun)}</b>",
         parse_mode=H,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆓 Bepul limit", callback_data="adm_set_free")],
+            [InlineKeyboardButton("🖼 Start Banner Rasm", callback_data="adm_set_start_photo")],
             [InlineKeyboardButton("🤖 Bot username", callback_data="adm_set_botusername")],
             [InlineKeyboardButton("👋 Welcome xabari", callback_data="adm_set_welcome")],
             [InlineKeyboardButton(
@@ -654,9 +673,11 @@ async def _channel_info(q):
 
 async def _mandatory_panel(q):
     mc = get_setting("mandatory_channel","")
+    status_str = esc(mc) if mc else "o'chirilgan"
+    btn_label = "❌ O'chirish" if mc else "🔕 (O'chirilgan)"
     await q.edit_message_text(
         f"📢 <b>Majburiy kanal obunasi</b>\n\n"
-        f"Joriy kanal: <code>{esc(mc) if mc else 'o\'chirilgan'}</code>\n\n"
+        f"Joriy kanal: <code>{status_str}</code>\n\n"
         f"<b>Nima qiladi:</b>\n"
         f"• Foydalanuvchi botni ishlatishdan oldin\n"
         f"  kanalga obuna bo'lishi shart\n"
@@ -667,8 +688,7 @@ async def _mandatory_panel(q):
         parse_mode=H,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ Kanal o'rnatish", callback_data="adm_set_mandatory")],
-            [InlineKeyboardButton("❌ O'chirish" if mc else "🔕 (O'chirilgan)", 
-                                  callback_data="adm_set_mandatory")],
+            [InlineKeyboardButton(btn_label, callback_data="adm_set_mandatory")],
             [InlineKeyboardButton("🔙", callback_data="adm_back")],
         ])
     )

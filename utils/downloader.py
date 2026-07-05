@@ -6,6 +6,7 @@ Userbot (Telethon) qo'llab-quvvatlash bilan
 import os
 import re
 import math
+import time
 import logging
 import asyncio
 import aiohttp
@@ -40,9 +41,47 @@ def delete_file(filepath: str):
         logger.error(f"Delete file error: {e}")
 
 
+def format_progress_bar(downloaded: int, total: int, speed_bps: float, elapsed_sec: float, stage: str = "⬇️ Yuklab olinmoqda") -> str:
+    """
+    Chiroyli progress bar va real vaqt statistikasi
+    """
+    pct = (downloaded / total * 100) if total > 0 else 0.0
+    pct = min(100.0, max(0.0, pct))
+    filled = int(12 * pct / 100)
+    bar = "█" * filled + "░" * (12 - filled)
+
+    dl_mb = downloaded / (1024 * 1024)
+    tot_mb = total / (1024 * 1024) if total > 0 else dl_mb
+
+    speed_mbps = speed_bps / (1024 * 1024)
+    if speed_mbps >= 1.0:
+        speed_str = f"{speed_mbps:.2f} MB/s"
+    elif speed_bps > 0:
+        speed_str = f"{speed_bps/1024:.1f} KB/s"
+    else:
+        speed_str = "0 KB/s"
+
+    if speed_bps > 0 and total > downloaded:
+        eta_sec = (total - downloaded) / speed_bps
+        eta_m, eta_s = divmod(int(eta_sec), 60)
+        eta_str = f"{eta_m:02d}:{eta_s:02d}"
+    else:
+        eta_str = "--:--"
+
+    spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spin = spinners[int(elapsed_sec * 2) % len(spinners)]
+
+    return (
+        f"{spin} <b>{stage}:</b> {pct:.1f}%\n"
+        f"<code>[{bar}]</code>\n"
+        f"📦 <b>Hajmi:</b> {dl_mb:.1f} / {tot_mb:.1f} MB\n"
+        f"⚡️ <b>Tezlik:</b> {speed_str} | ⏱ <b>Qolgan vaqt:</b> {eta_str}"
+    )
+
+
 async def download_file(url: str, filename: str, progress_cb=None) -> str:
     """
-    HTTP/HTTPS havoladan faylni yuklab oladi va saqlaydi.
+    HTTP/HTTPS havoladan faylni yuklab oladi va saqlaydi. Real vaqtdagi tezlik va progress bilan.
     """
     filepath = os.path.join(DOWNLOAD_DIR, filename)
     try:
@@ -54,18 +93,31 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
 
                 total_size = int(resp.headers.get("content-length", 0))
                 downloaded = 0
+                start_time = time.time()
+                last_time = start_time
+                last_downloaded = 0
 
                 with open(filepath, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 512): # 512KB chunks
+                    async for chunk in resp.content.iter_chunked(1024 * 512):  # 512KB chunks
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
-                            if total_size > 0 and progress_cb:
-                                pct = (downloaded / total_size) * 100
-                                try:
-                                    await progress_cb(downloaded, total_size, pct)
-                                except Exception:
-                                    pass
+
+                            now = time.time()
+                            dt = now - last_time
+                            if dt >= 0.5 or downloaded == total_size:  # har 0.5 soniyada hisoblash
+                                speed_bps = (downloaded - last_downloaded) / dt if dt > 0 else 0
+                                elapsed = now - start_time
+                                pct = (downloaded / total_size * 100) if total_size > 0 else 0
+
+                                last_time = now
+                                last_downloaded = downloaded
+
+                                if progress_cb:
+                                    try:
+                                        await progress_cb(downloaded, total_size, pct, speed_bps, elapsed)
+                                    except Exception:
+                                        pass
 
         return filepath
     except Exception as e:
@@ -76,13 +128,12 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
 
 async def upload_to_channel(bot: Bot, channel: str, filepath: str, caption: str):
     """
-    Faylni telegram kanaliga yuklaydi (50MB gacha standart Bot API, 50MB+ userbot orqali)
+    Faylni telegram kanaliga yuklaydi (50MB gacha standart Bot API)
     Returns: (msg_id, file_id) yoki None
     """
     try:
         mb = get_file_size_mb(filepath)
 
-        # Bot API 50MB cheklov
         if mb <= 50.0:
             with open(filepath, "rb") as f:
                 msg = await bot.send_document(
@@ -133,3 +184,4 @@ async def send_by_file_id(bot: Bot, user_id: int, file_id: str, caption: str) ->
     except Exception as e:
         logger.error(f"Send by file_id error: {e}")
         return False
+

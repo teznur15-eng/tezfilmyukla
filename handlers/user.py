@@ -159,13 +159,31 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    welcome = get_setting("welcome_message", "🎬 Xush kelibsiz!")
-    await update.message.reply_text(
+    welcome = get_setting("welcome_message", "🎬 Botimizga xush kelibsiz! Barcha mashhur va yangi kinolarni tez va oson yuklab oling.")
+    start_photo = get_setting("start_photo", "")
+
+    caption = (
         f"👋 <b>Salom, {esc(user.first_name)}!</b>\n\n"
         f"{esc(welcome)}\n\n"
-        f"📊 Holat: {_status_line(user.id)}\n\n"
-        f"🎬 Kino URL'ini yuboring yoki qidiring!\n"
-        f"Qo'llab-quvvatlanadi: asilmedia.org, uzmovie.uz, uzmovi.tv, kinolar.tv",
+        f"📊 <b>Sizning holatingiz:</b> {_status_line(user.id)}\n\n"
+        f"🎬 Kino URL'ini yuboring yoki izlang!\n"
+        f"<i>Qo'llab-quvvatlanadi: asilmedia.org, uzmovie.uz, uzmovi.tv, kinolar.tv</i>"
+    )
+
+    if start_photo:
+        try:
+            await update.message.reply_photo(
+                photo=start_photo,
+                caption=caption,
+                parse_mode=H,
+                reply_markup=_main_kb(user.id)
+            )
+            return
+        except Exception as e:
+            logger.warning(f"Start photo error: {e}")
+
+    await update.message.reply_text(
+        caption,
         parse_mode=H,
         reply_markup=_main_kb(user.id)
     )
@@ -253,7 +271,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "userbot_menu":
-            await _show_userbot_menu(q, user, context)
+            from handlers.userbot import show_userbot_menu_panel
+            await show_userbot_menu_panel(q, user, context)
+
+        elif data == "ub_connect_start":
+            from handlers.userbot import start_ub_connect
+            await start_ub_connect(q, user)
+
+        elif data == "ub_guide":
+            text = (
+                "📖 <b>my.telegram.org 'dan API ID olish qo'llanmasi:</b>\n\n"
+                "1. Braunzerda <a href='https://my.telegram.org'>my.telegram.org</a> ga kiring\n"
+                "2. Telegram telefon raqamingizni kiriting va kelgan kodni yozing\n"
+                "3. <b>API development tools</b> menyusini tanlang\n"
+                "4. App title va short name (masalan: <i>MyMovieApp</i>) deb yozing\n"
+                "5. Save bosing va <b>App api_id</b> hamda <b>App api_hash</b> ga ega bo'lasiz!\n\n"
+                "Ushbu raqamlarni botimizga kiritib, 2GB gacha kinolarni bepul yuklang."
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Ulashni boshlash", callback_data="ub_connect_start")],
+                [InlineKeyboardButton("🔙 Orqaga", callback_data="userbot_menu")]
+            ])
+            await q.edit_message_text(text, parse_mode=H, reply_markup=kb, disable_web_page_preview=True)
+
+        elif data == "ub_cancel":
+            from handlers.userbot import userbot_states, userbot_temp, show_userbot_menu_panel
+            userbot_states.pop(user.id, None)
+            userbot_temp.pop(user.id, None)
+            await show_userbot_menu_panel(q, user, context)
 
         elif data == "disconnect_userbot":
             from utils.database import disconnect_userbot
@@ -518,6 +563,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=H,
             reply_markup=_mandatory_channel_kb()
         )
+        return
+
+    # Admin holatida bo'lsa
+    if is_admin(user.id) and context.user_data.get("adm_state"):
+        from handlers.admin import admin_message
+        await admin_message(update, context)
         return
 
     # Userbot jarayoni
@@ -830,28 +881,30 @@ async def _handle_download(q, context: ContextTypes.DEFAULT_TYPE, data: str, use
 
     real_url = await resolve_real_url(url)
 
-    counter = {"last": -15}
-    async def progress(downloaded: int, total: int, pct: float):
-        if pct - counter["last"] >= 15:
-            counter["last"] = pct
-            filled = int(10 * pct / 100)
-            bar    = "█" * filled + "░" * (10 - filled)
-            try:
-                await wait.edit_text(
-                    f"⬇️ <b>Yuklab olinmoqda:</b> {pct:.0f}%\n"
-                    f"[{bar}]\n"
-                    f"📦 {downloaded/1024/1024:.1f} / {total/1024/1024:.1f} MB",
-                    parse_mode=H
-                )
-            except Exception:
-                pass
+    from utils.downloader import format_progress_bar
 
-    await wait.edit_text(
-        f"⬇️ Yuklab olinmoqda...\n🎬 <b>{esc(title)}</b>", parse_mode=H
-    )
+    async def dl_progress(downloaded: int, total: int, pct: float, speed_bps: float, elapsed_sec: float):
+        try:
+            bar_text = format_progress_bar(downloaded, total, speed_bps, elapsed_sec, stage="⬇️ Serverga yuklanmoqda")
+            await wait.edit_text(
+                f"🎬 <b>{esc(title)}</b>" + (f" — {part}-qism" if part else "") + "\n\n" + bar_text,
+                parse_mode=H
+            )
+        except Exception:
+            pass
+
+    async def ul_progress(current: int, total: int, pct: float, speed_bps: float, elapsed_sec: float):
+        try:
+            bar_text = format_progress_bar(current, total, speed_bps, elapsed_sec, stage="📤 Telegram'ga yuklanmoqda")
+            await wait.edit_text(
+                f"🎬 <b>{esc(title)}</b>" + (f" — {part}-qism" if part else "") + "\n\n" + bar_text,
+                parse_mode=H
+            )
+        except Exception:
+            pass
 
     filename = make_filename(title, quality, part)
-    filepath = await download_file(real_url, filename, progress_cb=progress)
+    filepath = await download_file(real_url, filename, progress_cb=dl_progress)
 
     if not filepath:
         await wait.edit_text(
@@ -873,18 +926,32 @@ async def _handle_download(q, context: ContextTypes.DEFAULT_TYPE, data: str, use
         if mb > 50.0:
             session = get_userbot_session(user.id)
             if session:
-                await wait.edit_text(f"📤 Userbot orqali Telegramga yuborilmoqda... ({mb:.1f} MB)")
+                await wait.edit_text(f"📤 Userbot orqali Telegram'ga yuborilmoqda... ({mb:.1f} MB)", parse_mode=H)
                 from handlers.userbot import upload_file_via_userbot
                 target_chat = channel if channel else user.id
-                ok, msg_id, ub_err = await upload_file_via_userbot(user.id, target_chat, filepath, caption)
+                ok, msg_id, ub_err = await upload_file_via_userbot(user.id, target_chat, filepath, caption, progress_cb=ul_progress)
                 if ok:
                     file_id = f"ub_{msg_id}"
                     if channel:
                         store_channel_file(url, msg_id, title, quality, part, file_id, int(mb*1024*1024))
                         await forward_from_channel(context.bot, channel, msg_id, user.id)
+                        try:
+                            await wait.delete()
+                        except Exception:
+                            pass
+                    else:
+                        # Direct to Saved Messages
+                        await wait.edit_text(
+                            f"🎉 <b>Kino muvaffaqiyatli yuklandi!</b>\n\n"
+                            f"🎬 <b>{esc(title)}</b> ({mb:.1f} MB)\n\n"
+                            f"📁 <b>Eslatma:</b>\n"
+                            f"Fayl hajmi 50MB dan katta bo'lgani uchun Telethon Userbotingiz orqali Telegram'dagi <b>Saqlangan xabarlar (Saved Messages / Избранное)</b> papkangizga yuborildi!\n\n"
+                            f"👇 Telegram'dagi 'Saved Messages' bo'limingizni tekshiring!",
+                            parse_mode=H,
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Bosh menyu", callback_data="back_main")]])
+                        )
                     _apply_limit(user.id, reason)
                     update_download(dl_id, file_id, int(mb * 1024 * 1024), "done")
-                    await wait.delete()
                 else:
                     update_download(dl_id, "", 0, "failed")
                     await wait.edit_text(f"❌ Userbot yuborishda xatolik: {esc(ub_err)}", parse_mode=H)
@@ -916,7 +983,10 @@ async def _handle_download(q, context: ContextTypes.DEFAULT_TYPE, data: str, use
 
         _apply_limit(user.id, reason)
         update_download(dl_id, file_id, int(mb * 1024 * 1024), "done")
-        await wait.delete()
+        try:
+            await wait.delete()
+        except Exception:
+            pass
 
     except Exception as e:
         logger.error(f"Upload: {e}")
