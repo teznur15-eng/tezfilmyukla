@@ -31,7 +31,7 @@ echo -e "📁 Loyiha papkasi: ${BOLD}${PROJECT_DIR}${NC}"
 # 1. Tizim paketlarini yangilash va o'rnatish
 echo -e "\n${YELLOW}[1/6] Linux paketlarini yangilash va zaruriy dasturlarni o'rnatish...${NC}"
 apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git ffmpeg sqlite3 curl build-essential
+apt-get install -y --no-install-recommends python3 python3-pip python3-venv git ffmpeg sqlite3 curl build-essential
 
 # 2. Python Virtual Environment (venv) yaratish
 echo -e "\n${YELLOW}[2/6] Python venv virtual muhitini sozlash...${NC}"

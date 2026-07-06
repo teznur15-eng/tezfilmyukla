@@ -98,14 +98,14 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                 last_downloaded = 0
 
                 with open(filepath, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 512):  # 512KB chunks
+                    async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
 
                             now = time.time()
                             dt = now - last_time
-                            if dt >= 0.5 or downloaded == total_size:  # har 0.5 soniyada hisoblash
+                            if dt >= 3.0 or downloaded == total_size:  # har 3.0 soniyada hisoblash
                                 speed_bps = (downloaded - last_downloaded) / dt if dt > 0 else 0
                                 elapsed = now - start_time
                                 pct = (downloaded / total_size * 100) if total_size > 0 else 0

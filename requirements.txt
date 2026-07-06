@@ -1,5 +1,6 @@
 python-telegram-bot>=21.0
 telethon>=1.34.0
+cryptg
 aiohttp>=3.9.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0

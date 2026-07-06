@@ -393,7 +393,7 @@ async def upload_file_via_userbot(user_id: int, target_chat: int | str, filepath
             if progress_cb and total > 0:
                 now = time.time()
                 dt = now - last_update[0]
-                if dt >= 0.8 or current == total:
+                if dt >= 3.0 or current == total:
                     speed = (current - last_update[1]) / dt if dt > 0 else 0
                     elapsed = now - start_time
                     pct = (current / total) * 100
