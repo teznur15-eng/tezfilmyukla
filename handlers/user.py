@@ -20,6 +20,8 @@ from utils.database import (
     get_user_free_used, get_user_bonus_dl, increment_free_used, use_bonus_dl,
     is_admin, submit_payment, get_userbot_session, get_user_downloads_count,
     get_stored_file, store_channel_file,
+    get_reviews_summary, get_recent_reviews, get_user_review, upsert_review,
+    log_user_action,
 )
 from utils.scraper import (
     scrape_movie, search_movies, internet_search_movie,
@@ -34,10 +36,11 @@ logger = logging.getLogger(__name__)
 H = ParseMode.HTML
 
 # ─── Foydalanuvchi holatlari ─────────────────────────────
-STATE_COMPLAINT  = "complaint"
-STATE_SEARCH     = "search"
-STATE_URL        = "url"
-STATE_INET       = "inet_search"
+STATE_COMPLAINT   = "complaint"
+STATE_SEARCH      = "search"
+STATE_URL         = "url"
+STATE_INET        = "inet_search"
+STATE_REVIEW_TEXT = "review_text"
 
 user_states: dict[int, str] = {}
 
@@ -119,8 +122,9 @@ def _main_kb(user_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton("👤 Profil",          callback_data="my_profile")],
         [InlineKeyboardButton("👥 Referral",         callback_data="referral"),
          InlineKeyboardButton("📋 Shikoyat",         callback_data="complaint")],
-        [InlineKeyboardButton("🔐 Userbot",          callback_data="userbot_menu"),
-         InlineKeyboardButton("ℹ️ Yordam",            callback_data="help")],
+        [InlineKeyboardButton("🔐 Userbot (50MB+)",  callback_data="userbot_menu"),
+         InlineKeyboardButton("⭐ Sharhlar & Fikrlar", callback_data="reviews_menu")],
+        [InlineKeyboardButton("ℹ️ Yordam / FAQ",     callback_data="help")],
     ]
     if check_subscription(user_id) or is_admin(user_id):
         rows.append([InlineKeyboardButton("🌐 Internet qidirish", callback_data="internet_search")])
@@ -220,10 +224,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if data == "back_main":
-            await q.edit_message_text(
-                f"🏠 <b>Asosiy menyu</b>\n\n📊 {_status_line(user.id)}",
-                parse_mode=H, reply_markup=_main_kb(user.id)
+            welcome = get_setting("welcome_message", "🎬 Botimizga xush kelibsiz! Barcha mashhur va yangi kinolarni tez va oson yuklab oling.")
+            caption = (
+                f"👋 <b>Salom, {esc(user.first_name)}!</b>\n\n"
+                f"{esc(welcome)}\n\n"
+                f"📊 <b>Sizning holatingiz:</b> {_status_line(user.id)}\n\n"
+                f"🎬 Kino URL'ini yuboring yoki izlang!\n"
+                f"<i>Qo'llab-quvvatlanadi: asilmedia.org, uzmovie.uz, uzmovi.tv, kinolar.tv</i>"
             )
+            if q.message.photo:
+                try:
+                    await q.edit_message_caption(caption=caption, parse_mode=H, reply_markup=_main_kb(user.id))
+                    return
+                except Exception:
+                    pass
+            try:
+                await q.edit_message_text(caption, parse_mode=H, reply_markup=_main_kb(user.id))
+            except Exception:
+                await q.message.reply_text(caption, parse_mode=H, reply_markup=_main_kb(user.id))
 
         elif data == "search_movie":
             user_states[user.id] = STATE_SEARCH
@@ -270,6 +288,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=H
             )
 
+        elif data == "reviews_menu":
+            await _show_reviews_menu(q, user)
+
+        elif data == "write_review":
+            await _start_write_review(q, user)
+
+        elif data.startswith("review_rate_"):
+            rating = int(data.split("_")[2])
+            context.user_data["pending_review_rating"] = rating
+            user_states[user.id] = STATE_REVIEW_TEXT
+            await q.edit_message_text(
+                f"⭐ Bahoingiz: <b>{'⭐' * rating} ({rating}/5)</b>\n\n"
+                f"Endi bot haqida qisqacha fikringiz (sharhingiz)ni yozib yuboring (masalan: <i>Bot juda tez va qulay ishlaydi!</i>):",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Bekor qilish", callback_data="reviews_menu")]])
+            )
+
         elif data == "userbot_menu":
             from handlers.userbot import show_userbot_menu_panel
             await show_userbot_menu_panel(q, user, context)
@@ -290,9 +325,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🚀 Ulashni boshlash", callback_data="ub_connect_start")],
+                [InlineKeyboardButton("🛡️ Userbot Xavfsizligi", callback_data="ub_security_info")],
                 [InlineKeyboardButton("🔙 Orqaga", callback_data="userbot_menu")]
             ])
             await q.edit_message_text(text, parse_mode=H, reply_markup=kb, disable_web_page_preview=True)
+
+        elif data == "ub_security_info":
+            text = (
+                "🛡️ <b>Userbot Xavfsizligi va Uning Maqsadi:</b>\n\n"
+                "<b>1. Userbot nima uchun kerak?</b>\n"
+                "Telegram Bot API rasmiy qoidasiga ko'ra oddiy botlar maksimal 50MB fayl yuborishi mumkin. "
+                "4K va HD kinolar hajmi esa 50MB dan 2,000MB (2GB) gacha bo'ladi. "
+                "Userbot yordamida siz kinolarni cheklovsiz o'z Telegram accountingiz orqali yuklaysiz!\n\n"
+                "<b>2. Userbot xavfsizmi?</b>\n"
+                "• Session ma'lumotingiz shifrlangan bazada saqlanadi va faqat kinoni Saqlangan xabarlar (Saved Messages) papkangizga yuborish uchun ishlatiladi.\n"
+                "• Bot hech qachon shaxsiy yozishmalaringizni o'qimaydi va boshqalarga yubormaydi.\n"
+                "• Istalgan vaqtda '🔴 Userbotni uzish' tugmasi orqali yoki Telegram Sozlamalari -> Qurilmalar bo'limidan seansni darhol tugatishingiz mumkin!\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Userbotni ulash", callback_data="ub_connect_start")],
+                [InlineKeyboardButton("🔙 Orqaga", callback_data="userbot_menu")]
+            ])
+            await q.edit_message_text(text, parse_mode=H, reply_markup=kb)
 
         elif data == "ub_cancel":
             from handlers.userbot import userbot_states, userbot_temp, show_userbot_menu_panel
@@ -533,6 +587,101 @@ async def _show_help(q):
     )
 
 
+async def _show_reviews_menu(q, user):
+    summary = get_reviews_summary()
+    recent = get_recent_reviews(6)
+    user_rev = get_user_review(user.id)
+
+    total = summary["count"]
+    avg = summary["avg"]
+    stars = summary["stars"]
+
+    star_str = ""
+    if total > 0:
+        bars = []
+        for s in [5, 4, 3, 2, 1]:
+            cnt = stars.get(s, 0)
+            pct = int(cnt / total * 10) if total else 0
+            bar = "★" * pct + "☆" * (10 - pct)
+            bars.append(f"  {s} ⭐: {bar} ({cnt})")
+        star_str = "\n".join(bars) + "\n\n"
+
+    rec_text = ""
+    if recent:
+        rec_text = "💬 <b>So'nggi foydalanuvchilar sharhlari:</b>\n\n"
+        for r in recent:
+            name = esc(r.get("full_name") or r.get("username") or f"Foydalanuvchi #{r['user_id']}")
+            star_icons = "⭐" * r["rating"]
+            comment = esc(r.get("comment", "")[:120])
+            dt = str(r.get("updated_at", ""))[:10]
+            rec_text += f"👤 <b>{name}</b> ({star_icons}) — <i>{dt}</i>\n«{comment}»\n\n"
+    else:
+        rec_text = "<i>Hozircha sharhlar mavjud emas. Birinchi bo'lib sharh qoldiring!</i>\n\n"
+
+    user_rev_text = ""
+    if user_rev:
+        u_stars = "⭐" * user_rev["rating"]
+        user_rev_text = (
+            f"✍️ <b>Sizning sharhingiz:</b> {u_stars} ({user_rev['rating']}/5)\n"
+            f"«<i>{esc(user_rev['comment'])}</i>»\n"
+            f"<i>Kuniga 1 marta tahrirlash mumkin.</i>\n\n"
+        )
+
+    text = (
+        f"⭐ <b>Fikrlar va Sharhlar Bo'limi</b>\n\n"
+        f"🏆 <b>O'rtacha baho:</b> ⭐ <b>{avg} / 5.0</b> ({total} ta sharh)\n\n"
+        f"{star_str}"
+        f"{user_rev_text}"
+        f"{rec_text}"
+        f"📌 Bot haqida o'z fikringiz va bahoingizni qoldiring!"
+    )
+
+    btn_label = "✏️ Sharhingizni tahrirlash" if user_rev else "✍️ Sharh va Baho qoldirish"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(btn_label, callback_data="write_review")],
+        [InlineKeyboardButton("🔄 Yangilash", callback_data="reviews_menu")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")]
+    ])
+
+    if q.message.photo:
+        await q.message.reply_text(text, parse_mode=H, reply_markup=kb)
+    else:
+        await q.edit_message_text(text, parse_mode=H, reply_markup=kb)
+
+
+async def _start_write_review(q, user):
+    user_rev = get_user_review(user.id)
+    if user_rev and user_rev.get("updated_at"):
+        try:
+            from datetime import datetime
+            last_dt = datetime.strptime(str(user_rev["updated_at"])[:19], "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - last_dt).total_seconds() < 86400:
+                hours_left = int((86400 - (datetime.now() - last_dt).total_seconds()) // 3600) + 1
+                await q.answer(
+                    f"⏳ Sharhingizni kuniga faqat 1 marta tahrirlashingiz mumkin! Keyingi tahrirlash uchun {hours_left} soat qoldi.",
+                    show_alert=True
+                )
+                return
+        except Exception:
+            pass
+
+    text = (
+        "⭐ <b>Botga baho bering:</b>\n\n"
+        "Quyidagi yulduzchalardan birini tanlang:"
+    )
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⭐ 1", callback_data="review_rate_1"),
+            InlineKeyboardButton("⭐ 2", callback_data="review_rate_2"),
+            InlineKeyboardButton("⭐ 3", callback_data="review_rate_3"),
+            InlineKeyboardButton("⭐ 4", callback_data="review_rate_4"),
+            InlineKeyboardButton("⭐ 5", callback_data="review_rate_5"),
+        ],
+        [InlineKeyboardButton("🔙 Bekor qilish", callback_data="reviews_menu")]
+    ])
+    await q.edit_message_text(text, parse_mode=H, reply_markup=kb)
+
+
 # ═══════════════════════════════════════════════════════
 #  XABAR HANDLER
 # ═══════════════════════════════════════════════════════
@@ -604,6 +753,29 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"✅ Shikoyat qabul qilindi (#{cid}).", reply_markup=_main_kb(user.id))
         return
 
+    if state == STATE_REVIEW_TEXT:
+        rating = context.user_data.get("pending_review_rating", 5)
+        text_val = text
+        if len(text_val) < 3:
+            await msg.reply_text("❌ Sharh matni juda qisqa! Kamida 3 ta belgi yozing.")
+            return
+        if len(text_val) > 300:
+            text_val = text_val[:300]
+
+        ok, resp_msg = upsert_review(user.id, rating, text_val)
+        user_states.pop(user.id, None)
+        context.user_data.pop("pending_review_rating", None)
+        log_user_action(user.id, "submit_review", f"rating={rating}")
+
+        await msg.reply_text(
+            f"{resp_msg}\n\n"
+            f"Baho: <b>{'⭐' * rating} ({rating}/5)</b>\n"
+            f"Sharh: «<i>{esc(text_val)}</i>»",
+            parse_mode=H,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Sharhlar bo'limiga qaytish", callback_data="reviews_menu")]])
+        )
+        return
+
     if state == STATE_SEARCH:
         user_states.pop(user.id, None)
         await _do_search(update, context, text)
@@ -626,10 +798,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _process_url(msg, context, text, user)
         return
 
-    await msg.reply_text(
-        f"🏠 <b>Asosiy menyu</b>\n\n📊 {_status_line(user.id)}",
-        parse_mode=H, reply_markup=_main_kb(user.id)
-    )
+    if text:
+        log_user_action(user.id, "search_text", text)
+        await _do_search(update, context, text)
+        return
 
 
 # ═══════════════════════════════════════════════════════

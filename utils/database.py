@@ -146,6 +146,26 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reviews (
+        user_id INTEGER PRIMARY KEY,
+        rating INTEGER,
+        comment TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        action TEXT,
+        details TEXT,
+        created_at TEXT
+    );
+    """)
+
     conn.commit()
 
     # Boshlang'ich default sozlamalar
@@ -698,3 +718,242 @@ def get_user_downloads_count(user_id: int) -> int:
     cnt = cur.fetchone()[0]
     conn.close()
     return cnt
+
+
+# ─── USER LOGS OPERATIONS ─────────────────────────────────────
+
+def log_user_action(user_id: int, action: str, details: str = ""):
+    try:
+        conn = get_connection()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+        INSERT INTO user_logs (user_id, action, details, created_at)
+        VALUES (?, ?, ?, ?)
+        """, (user_id, action, details, now_str))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        pass
+
+
+def get_activity_logs_for_report(limit: int = 1000) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT l.*, u.username, u.full_name
+    FROM user_logs l
+    LEFT JOIN users u ON l.user_id = u.user_id
+    ORDER BY l.created_at DESC LIMIT ?
+    """, (limit,))
+    res = rows_to_list(cur.fetchall())
+    conn.close()
+    return res
+
+
+# ─── REVIEWS OPERATIONS ────────────────────────────────────────
+
+def upsert_review(user_id: int, rating: int, comment: str) -> tuple[bool, str]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM reviews WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    if row is not None:
+        last_updated_str = row["updated_at"] or row["created_at"]
+        try:
+            last_dt = datetime.strptime(last_updated_str, "%Y-%m-%d %H:%M:%S")
+            if (now - last_dt).total_seconds() < 86400:
+                hours_left = int((86400 - (now - last_dt).total_seconds()) // 3600) + 1
+                conn.close()
+                return False, f"⏳ Sharhingizni kuniga faqat 1 marta tahrirlashingiz mumkin! Keyingi tahrirlash uchun {hours_left} soat qoldi."
+        except Exception:
+            pass
+
+        cur.execute("""
+        UPDATE reviews SET rating = ?, comment = ?, updated_at = ? WHERE user_id = ?
+        """, (rating, comment, now_str, user_id))
+        conn.commit()
+        conn.close()
+        return True, "✅ Sharhingiz tahrirlandi va yangilandi!"
+    else:
+        cur.execute("""
+        INSERT INTO reviews (user_id, rating, comment, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (user_id, rating, comment, now_str, now_str))
+        conn.commit()
+        conn.close()
+        return True, "✅ Rahmat! Sharhingiz saqlandi."
+
+
+def get_user_review(user_id: int) -> dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM reviews WHERE user_id = ?", (user_id,))
+    res = row_to_dict(cur.fetchone())
+    conn.close()
+    return res
+
+
+def get_reviews_summary() -> dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*), AVG(rating) FROM reviews")
+    row = cur.fetchone()
+    count = row[0] or 0
+    avg_rating = round(row[1] or 0.0, 1)
+
+    stars = {1:0, 2:0, 3:0, 4:0, 5:0}
+    cur.execute("SELECT rating, COUNT(*) FROM reviews GROUP BY rating")
+    for r, c in cur.fetchall():
+        if r in stars:
+            stars[r] = c
+
+    conn.close()
+    return {
+        "count": count,
+        "avg": avg_rating,
+        "stars": stars
+    }
+
+
+def get_recent_reviews(limit: int = 10) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT r.*, u.full_name, u.username
+    FROM reviews r
+    LEFT JOIN users u ON r.user_id = u.user_id
+    ORDER BY r.updated_at DESC LIMIT ?
+    """, (limit,))
+    res = rows_to_list(cur.fetchall())
+    conn.close()
+    return res
+
+
+# ─── DETAILED ADVANCED STATISTICS ─────────────────────────────
+
+def get_detailed_statistics() -> dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now()
+
+    # Time cutoffs
+    today_start = now.strftime("%Y-%m-%d 00:00:00")
+    yest_start  = (now - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    yest_end    = (now - timedelta(days=1)).strftime("%Y-%m-%d 23:59:59")
+    week_start  = (now - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+    month_start = (now - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
+
+    # User metrics
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (today_start,))
+    new_today = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ? AND created_at <= ?", (yest_start, yest_end))
+    new_yesterday = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_start,))
+    new_week = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (month_start,))
+    new_month = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (today_start,))
+    active_today = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (week_start,))
+    active_week = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE last_active >= ?", (month_start,))
+    active_month = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
+    banned_users = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE sub_expires > ?", (now.strftime("%Y-%m-%d %H:%M:%S"),))
+    subscribed_users = cur.fetchone()[0]
+
+    # Userbot stats
+    cur.execute("SELECT COUNT(*) FROM userbot_sessions")
+    userbots_count = cur.fetchone()[0]
+
+    # Download stats
+    cur.execute("SELECT COUNT(*), SUM(file_size) FROM downloads WHERE status = 'done'")
+    d_row = cur.fetchone()
+    total_downloads = d_row[0] or 0
+    total_bytes = d_row[1] or 0
+    total_gb = round(total_bytes / (1024 * 1024 * 1024), 2)
+
+    cur.execute("SELECT COUNT(*) FROM downloads WHERE status = 'done' AND created_at >= ?", (today_start,))
+    downloads_today = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM downloads WHERE status = 'done' AND created_at >= ?", (week_start,))
+    downloads_week = cur.fetchone()[0]
+
+    # Quality breakdown
+    cur.execute("SELECT quality, COUNT(*) FROM downloads WHERE status = 'done' GROUP BY quality ORDER BY COUNT(*) DESC")
+    quality_breakdown = cur.fetchall()
+
+    # Top downloaded movies
+    cur.execute("""
+    SELECT title, COUNT(*) as cnt, quality
+    FROM downloads
+    WHERE status = 'done' AND title != ''
+    GROUP BY title
+    ORDER BY cnt DESC LIMIT 15
+    """)
+    top_movies = rows_to_list(cur.fetchall())
+
+    # Reviews summary
+    rev_summary = get_reviews_summary()
+
+    # Domain breakdown from URLs
+    cur.execute("SELECT url FROM downloads WHERE status = 'done'")
+    urls = [r[0] for r in cur.fetchall() if r[0]]
+    domains = {"asilmedia": 0, "uzmovie": 0, "uzmovi": 0, "kinolar": 0, "boshqa": 0}
+    for u in urls:
+        if "asilmedia" in u:
+            domains["asilmedia"] += 1
+        elif "uzmovie" in u:
+            domains["uzmovie"] += 1
+        elif "uzmovi" in u:
+            domains["uzmovi"] += 1
+        elif "kinolar" in u:
+            domains["kinolar"] += 1
+        else:
+            domains["boshqa"] += 1
+
+    conn.close()
+
+    return {
+        "users": {
+            "total": total_users,
+            "new_today": new_today,
+            "new_yesterday": new_yesterday,
+            "new_week": new_week,
+            "new_month": new_month,
+            "active_today": active_today,
+            "active_week": active_week,
+            "active_month": active_month,
+            "banned": banned_users,
+            "subscribed": subscribed_users
+        },
+        "userbots": {
+            "total": userbots_count
+        },
+        "downloads": {
+            "total": total_downloads,
+            "total_gb": total_gb,
+            "today": downloads_today,
+            "week": downloads_week,
+            "qualities": quality_breakdown,
+            "domains": domains,
+            "top_movies": top_movies
+        },
+        "reviews": rev_summary
+    }
+

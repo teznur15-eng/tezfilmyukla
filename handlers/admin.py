@@ -20,7 +20,9 @@ from utils.database import (
     get_setting, set_setting,
     get_open_complaints, reply_complaint, get_complaint_by_id,
     search_channel_storage,
+    get_detailed_statistics, get_activity_logs_for_report, log_user_action,
 )
+from utils.pdf_generator import PDFBuilder
 
 logger = logging.getLogger(__name__)
 H = ParseMode.HTML
@@ -89,6 +91,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if   data == "adm_stats":           await _stats(q)
+        elif data == "export_pdf_report":   await _export_pdf_report(q, context)
         elif data == "adm_users":           await _users(q)
         elif data == "adm_tariffs":         await _tariffs(q)
         elif data == "adm_cards":           await _cards(q)
@@ -360,10 +363,13 @@ async def admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("✅ Xush kelibsiz xabari o'zgartirildi.")
 
     elif state == "set_start_photo":
-        val = "" if text == "0" else text
+        if msg.photo:
+            val = msg.photo[-1].file_id
+        else:
+            val = "" if text == "0" else text
         set_setting("start_photo", val)
         context.user_data.pop("adm_state", None)
-        await msg.reply_text("✅ Start uchun rasm sozlamasi yangilandi!")
+        await msg.reply_text("✅ Start xabari uchun rasm / banner sozlamasi yangilandi!")
 
     elif state.startswith("resolve_"):
         try:
@@ -439,23 +445,140 @@ async def _admin_main(q):
 
 
 async def _stats(q):
-    total  = get_users_count()
-    active = get_active_users_count()
-    tarifs = get_all_tariffs()
-    pends  = len(get_pending_payments())
-    ch     = get_setting("storage_channel","—")
-    mc     = get_setting("mandatory_channel","—")
-    await q.edit_message_text(
-        f"📊 <b>Statistika</b>\n\n"
-        f"👥 Jami: <b>{total}</b>\n"
-        f"🟢 Faol (7 kun): <b>{active}</b>\n"
-        f"🏷 Tariflar: <b>{len(tarifs)}</b>\n"
-        f"💰 Kutilayotgan to'lov: <b>{pends}</b>\n"
-        f"📦 Storage kanal: <code>{esc(ch)}</code>\n"
-        f"📢 Majburiy kanal: <code>{esc(mc)}</code>",
-        parse_mode=H,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_back")]])
+    s = get_detailed_statistics()
+    u = s["users"]
+    d = s["downloads"]
+    r = s["reviews"]
+
+    top_m_text = ""
+    if d["top_movies"]:
+        top_m_text = "\n🔥 <b>Top Kinolar:</b>\n" + "\n".join([
+            f"• {esc(m['title'][:25])} — {m['cnt']} ta" for m in d["top_movies"][:5]
+        ])
+
+    text = (
+        f"📊 <b>Kengaytirilgan Bot Statistikasi</b>\n\n"
+        f"👥 <b>Foydalanuvchilar:</b>\n"
+        f" • Jami: <b>{u['total']} ta</b>\n"
+        f" • Bugun yangi: <b>+{u['new_today']}</b> | Kecha: <b>+{u['new_yesterday']}</b>\n"
+        f" • Bugun faol (24h): <b>{u['active_today']}</b>\n"
+        f" • Haftalik faol: <b>{u['active_week']}</b> | Oylik: <b>{u['active_month']}</b>\n"
+        f" • Premium obunachilar: <b>{u['subscribed']} ta</b>\n"
+        f" • Userbot ulaganlar: <b>{s['userbots']['total']} ta</b>\n\n"
+        f"📦 <b>Yuklab Olishlar:</b>\n"
+        f" • Jami: <b>{d['total']} ta</b> (<b>{d['total_gb']} GB</b> trafik)\n"
+        f" • Bugun yuklangan: <b>{d['today']} ta</b>\n"
+        f" • Haftalik yuklangan: <b>{d['week']} ta</b>\n\n"
+        f"⭐ <b>Fikrlar va Reyting:</b>\n"
+        f" • O'rtacha baho: <b>⭐ {r['avg']} / 5.0</b> ({r['count']} ta sharh)\n"
+        f"{top_m_text}\n\n"
+        f"📥 <i>1,000+ qatorlik batafsil hisobot, foydalanuvchilar loglari va grafiklar uchun PDF faylni yuklab oling:</i>"
     )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 PDF Hisobotni Yuklash (Batafsil Loglar)", callback_data="export_pdf_report")],
+        [InlineKeyboardButton("🔙 Orqaga", callback_data="adm_back")]
+    ])
+
+    await q.edit_message_text(text, parse_mode=H, reply_markup=kb)
+
+
+async def _export_pdf_report(q, context):
+    try:
+        await q.answer("⏳ PDF hisobot tayyorlanmoqda...", show_alert=False)
+    except Exception:
+        pass
+
+    stats = get_detailed_statistics()
+    logs = get_activity_logs_for_report(1000)
+
+    pdf = PDFBuilder(title="MovieBot Kengaytirilgan Analitik Hisoboti")
+
+    # 1. Executive Summary Cards
+    pdf.add_section_header("1. ASOSIY STATISTIKA")
+    pdf.add_metric_cards([
+        ("Jami Foydalanuvchilar", str(stats["users"]["total"])),
+        ("Bugun Faol", str(stats["users"]["active_today"])),
+        ("Haftalik Faol", str(stats["users"]["active_week"])),
+        ("Userbot Ulangan", str(stats["userbots"]["total"]))
+    ])
+
+    pdf.add_metric_cards([
+        ("Jami Yuklanmalar", str(stats["downloads"]["total"])),
+        ("Trafik Hajmi", f"{stats['downloads']['total_gb']} GB"),
+        ("Bugun Yuklangan", str(stats["downloads"]["today"])),
+        ("O'rtacha Baho", f"⭐ {stats['reviews']['avg']} / 5")
+    ])
+
+    # 2. Users Breakdown
+    pdf.add_section_header("2. FOYDALANUVCHILAR DINAMIKASI")
+    u_headers = ["Kategoriya", "Soni / Ko'rsatkich"]
+    u_rows = [
+        ["Jami ro'yxatdan o'tganlar", str(stats["users"]["total"])],
+        ["Bugun qo'shilgan yangi foydalanuvchilar", str(stats["users"]["new_today"])],
+        ["Kecha qo'shilgan yangi foydalanuvchilar", str(stats["users"]["new_yesterday"])],
+        ["Shu haftada qo'shilganlar", str(stats["users"]["new_week"])],
+        ["Shu oyda qo'shilganlar", str(stats["users"]["new_month"])],
+        ["Bugun aktiv bo'lganlar (24 soat)", str(stats["users"]["active_today"])],
+        ["So'nggi 7 kunda aktivlar", str(stats["users"]["active_week"])],
+        ["So'nggi 30 kunda aktivlar", str(stats["users"]["active_month"])],
+        ["Faol Premium obunachilar", str(stats["users"]["subscribed"])],
+        ["Bloklangan foydalanuvchilar", str(stats["users"]["banned"])],
+    ]
+    pdf.add_table(u_headers, u_rows, [250, 275])
+
+    # 3. Downloads & Sites Breakdown
+    pdf.add_section_header("3. MANBALAR VA SIFAT TAQSIMOTI")
+    d_headers = ["Manba Sayt", "Yuklashlar Soni"]
+    d_rows = [[domain, str(cnt)] for domain, cnt in stats["downloads"]["domains"].items()]
+    pdf.add_table(d_headers, d_rows, [250, 275])
+
+    q_headers = ["Kino Sifati (Quality)", "Yuklashlar Soni"]
+    q_rows = [[str(q[0] or "Nomalum"), str(q[1])] for q in stats["downloads"]["qualities"]]
+    pdf.add_table(q_headers, q_rows, [250, 275])
+
+    # 4. Top Movies
+    if stats["downloads"]["top_movies"]:
+        pdf.add_section_header("4. ENG KO'P YUKLANGAN KINOLAR TOP-15")
+        m_headers = ["#", "Kino Nomlanishi", "Sifati", "Yuklanishlar"]
+        m_rows = [
+            [str(i+1), m["title"], m.get("quality", "HD"), str(m["cnt"])]
+            for i, m in enumerate(stats["downloads"]["top_movies"])
+        ]
+        pdf.add_table(m_headers, m_rows, [30, 280, 90, 125])
+
+    # 5. User Activity Logs
+    if logs:
+        pdf.add_section_header("5. FOYDALANUVCHILARNING SO'NGGI HARAKATLARI LOGI")
+        l_headers = ["Sana / Vaqt", "User ID", "Foydalanuvchi", "Harakat / Buyruq", "Tafsilot"]
+        l_rows = [
+            [
+                l["created_at"],
+                str(l["user_id"]),
+                l.get("full_name") or l.get("username") or "Anonim",
+                l.get("action") or "-",
+                l.get("details") or "-"
+            ]
+            for l in logs[:800]
+        ]
+        pdf.add_table(l_headers, l_rows, [100, 70, 110, 110, 135])
+
+    from datetime import datetime
+    out_filename = f"reports/MovieBot_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    pdf.build(out_filename)
+
+    with open(out_filename, "rb") as pdf_file:
+        await context.bot.send_document(
+            chat_id=q.from_user.id,
+            document=pdf_file,
+            filename=os.path.basename(out_filename),
+            caption=(
+                f"📄 <b>MovieBot Analitik Hisobot (PDF)</b>\n\n"
+                f"📊 <b>Barcha ko'rsatkichlar, foydalanuvchilar faolligi va tizim loglari yuklandi!</b>\n"
+                f"📅 Sana: <b>{datetime.now().strftime('%d.%m.%Y %H:%M')}</b>"
+            ),
+            parse_mode=H
+        )
 
 
 async def _users(q):
