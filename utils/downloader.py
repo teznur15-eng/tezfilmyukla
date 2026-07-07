@@ -97,17 +97,17 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                 last_time = start_time
                 last_downloaded = 0
 
-                loop = asyncio.get_running_loop()
-                with open(filepath, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks
-                        if chunk:
-                            await loop.run_in_executor(None, f.write, chunk)
-                            downloaded += len(chunk)
-
+                # Biz yuklashni bloklamaslik uchun, progress yangilashni alohida task qilib fonda ishlatamiz.
+                # Bu orqali aiohttp eng yuqori tezlikda (bloklanmasdan) faylni yuklab oladi.
+                async def progress_reporter():
+                    nonlocal last_time, last_downloaded
+                    while downloaded < total_size:
+                        try:
+                            await asyncio.sleep(3.0)  # Har 3 soniyada xabar yuborish
                             now = time.time()
                             dt = now - last_time
-                            if dt >= 3.0 or downloaded == total_size:  # har 3.0 soniyada hisoblash
-                                speed_bps = (downloaded - last_downloaded) / dt if dt > 0 else 0
+                            if dt > 0:
+                                speed_bps = (downloaded - last_downloaded) / dt
                                 elapsed = now - start_time
                                 pct = (downloaded / total_size * 100) if total_size > 0 else 0
 
@@ -115,10 +115,39 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                                 last_downloaded = downloaded
 
                                 if progress_cb:
-                                    try:
-                                        await progress_cb(downloaded, total_size, pct, speed_bps, elapsed)
-                                    except Exception:
-                                        pass
+                                    await progress_cb(downloaded, total_size, pct, speed_bps, elapsed)
+                        except asyncio.CancelledError:
+                            break
+                        except Exception:
+                            pass
+
+                reporter_task = None
+                if progress_cb and total_size > 0:
+                    reporter_task = asyncio.create_task(progress_reporter())
+
+                loop = asyncio.get_running_loop()
+                try:
+                    with open(filepath, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(128 * 1024):  # 128KB chunks for steady streaming and accurate progress
+                            if chunk:
+                                await loop.run_in_executor(None, f.write, chunk)
+                                downloaded += len(chunk)
+                finally:
+                    if reporter_task:
+                        reporter_task.cancel()
+                        try:
+                            await reporter_task
+                        except Exception:
+                            pass
+
+                # Yakuniy holatni yangilash
+                if progress_cb:
+                    try:
+                        now = time.time()
+                        elapsed = now - start_time
+                        await progress_cb(total_size, total_size, 100.0, 0, elapsed)
+                    except Exception:
+                        pass
 
         return filepath
     except Exception as e:

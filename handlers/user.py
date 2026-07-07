@@ -45,6 +45,7 @@ STATE_REVIEW_TEXT = "review_text"
 
 user_states: dict[int, str] = {}
 active_downloads: dict[int, asyncio.Task] = {}
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)  # Maksimal 3 ta parallel yuklash
 
 
 def esc(text: str) -> str:
@@ -1138,8 +1139,23 @@ async def _handle_download(q, context: ContextTypes.DEFAULT_TYPE, data: str, use
             except Exception:
                 pass
 
-        filename = make_filename(title, quality, part)
-        filepath = await download_file(real_url, filename, progress_cb=dl_progress)
+        if DOWNLOAD_SEMAPHORE.locked():
+            try:
+                await wait.edit_text(
+                    f"🎬 <b>{esc(title)}</b>" + (f" — {part}-qism" if part else "") + "\n\n"
+                    f"⏳ <b>Server yuklangan!</b> So'rovingiz yuklash navbatiga qo'shildi.\n"
+                    f"<i>Navbatingiz kelishi bilan yuklash avtomatik boshlanadi. Iltimos, kuting...</i>",
+                    parse_mode=H,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("❌ To'xtatish", callback_data=f"cancel_dl_{user.id}")
+                    ]])
+                )
+            except Exception:
+                pass
+
+        async with DOWNLOAD_SEMAPHORE:
+            filename = make_filename(title, quality, part)
+            filepath = await download_file(real_url, filename, progress_cb=dl_progress)
 
         if not filepath:
             await wait.edit_text(
