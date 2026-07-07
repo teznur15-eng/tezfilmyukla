@@ -436,6 +436,46 @@ reaction_cache: set = set()
 async def send_media_safely(client, to_peer, msg, caption=None, status_msg=None):
     import os
     import tempfile
+    import time
+    
+    local_status_msg = None
+    is_local = False
+
+    def make_progress_callback(msg_to_edit, action_text):
+        last_update_time = [time.time()]
+        last_percent = [0]
+        
+        async def callback(current, total):
+            if not msg_to_edit:
+                return
+            if not total or total <= 0:
+                return
+            
+            pct = (current / total) * 100
+            now = time.time()
+            if now - last_update_time[0] >= 1.5 or pct >= 100 or pct - last_percent[0] >= 15:
+                last_update_time[0] = now
+                last_percent[0] = pct
+                
+                filled_length = int(pct / 10)
+                bar = "█" * filled_length + "░" * (10 - filled_length)
+                
+                size_mb = total / (1024 * 1024)
+                curr_mb = current / (1024 * 1024)
+                
+                progress_text = (
+                    f"🔒 <b>Kanal himoyalangan! Tizim aylanib o'tish rejimida ishlayapti...</b>\n\n"
+                    f"⚙️ <b>{action_text}:</b>\n"
+                    f"<code>[{bar}]</code> {pct:.1f}%\n"
+                    f"📊 {curr_mb:.2f}MB / {size_mb:.2f}MB"
+                )
+                try:
+                    await msg_to_edit.edit(progress_text, parse_mode="html")
+                except Exception as edit_err:
+                    logger.debug(f"Progress update failed: {edit_err}")
+                    pass
+        return callback
+
     try:
         # Harakat qilib ko'ramiz oddiy forward qilishga (faqat ruxsat berilgan chatlarda ishlaydi)
         await client.send_message(to_peer, msg)
@@ -447,11 +487,23 @@ async def send_media_safely(client, to_peer, msg, caption=None, status_msg=None)
         # Agar kanal/guruh himoyalangan bo'lsa (Restrict Saving Content yoqilgan bo'lsa)
         if "forward" in err_str or "protect" in err_str or "restrict" in err_str or "media" in err_str or "privacy" in err_str:
             logger.info("Forwarding failed due to chat protection. Initiating secure cloud-copy...")
+            
             if status_msg:
+                active_status_msg = status_msg
+            else:
                 try:
-                    await status_msg.edit("🔒 <b>Kanal himoyalangan ekan. Yuklab olib, to'g'ridan-to'g'ri yuborish tizimi ishga tushdi...</b> (Hozir yuklab olinmoqda 🚀)", parse_mode="html")
+                    active_status_msg = await client.send_message(to_peer, "🔒 <b>Kanal himoyalangan ekan. Yuklab olib, to'g'ridan-to'g'ri yuborish tizimi ishga tushdi...</b>", parse_mode="html")
+                    local_status_msg = active_status_msg
+                    is_local = True
+                except Exception:
+                    active_status_msg = None
+            
+            if active_status_msg:
+                try:
+                    await active_status_msg.edit("🔒 <b>Kanal himoyalangan ekan. Yuklab olib, qayta yuborish boshlandi...</b>\n⏱ <i>Serverga yuklab olinmoqda...</i>", parse_mode="html")
                 except Exception:
                     pass
+            
             try:
                 suffix = ""
                 if msg.file and msg.file.ext:
@@ -460,19 +512,30 @@ async def send_media_safely(client, to_peer, msg, caption=None, status_msg=None)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp_path = tmp.name
                 
-                # Telethon orqali serverga tezkor yuklab olamiz
-                downloaded_file = await client.download_media(msg, file=tmp_path)
+                # Telethon orqali serverga yuklab olamiz (progress bar bilan)
+                download_cb = make_progress_callback(active_status_msg, "Serverga yuklab olinmoqda (Download)") if active_status_msg else None
+                downloaded_file = await client.download_media(msg, file=tmp_path, progress_callback=download_cb)
+                
                 if downloaded_file and os.path.exists(downloaded_file):
-                    if status_msg:
+                    if active_status_msg:
                         try:
-                            await status_msg.edit("⚡️ <b>Saqlangan xabarlar (Saved Messages) papkangizga yuklanmoqda...</b>", parse_mode="html")
+                            await active_status_msg.edit("⚡️ <b>Fayl muvaffaqiyatli yuklandi. Endi sizning 'Saved Messages'ingizga yuborilmoqda...</b>", parse_mode="html")
                         except Exception:
                             pass
                     
                     actual_caption = caption or (msg.text or "")
-                    # Uni yangi fayl sifatida yuboramiz - bu Telegram forward cheklovlarini to'liq aylanib o'tadi!
-                    await client.send_file(to_peer, downloaded_file, caption=actual_caption, parse_mode="html")
                     
+                    # Telegramga yuklash (progress bar bilan)
+                    upload_cb = make_progress_callback(active_status_msg, "Telegramga yuklanmoqda (Upload)") if active_status_msg else None
+                    await client.send_file(to_peer, downloaded_file, caption=actual_caption, parse_mode="html", progress_callback=upload_cb)
+                    
+                    # Agar bu lokal yaratilgan status_msg bo'lsa, tugallanganini ko'rsatamiz
+                    if is_local and local_status_msg:
+                        try:
+                            await local_status_msg.edit("✅ <b>Video muvaffaqiyatli saqlandi!</b>", parse_mode="html")
+                        except Exception:
+                            pass
+                            
                     # Tozalash
                     try:
                         os.remove(downloaded_file)
@@ -481,6 +544,11 @@ async def send_media_safely(client, to_peer, msg, caption=None, status_msg=None)
                     return True
             except Exception as inner_err:
                 logger.error(f"Failed in secure cloud-copy: {inner_err}")
+                if is_local and local_status_msg:
+                    try:
+                        await local_status_msg.edit(f"❌ <b>Xatolik yuz berdi:</b>\n<code>{inner_err}</code>", parse_mode="html")
+                    except Exception:
+                        pass
                 raise inner_err
         raise e
 
