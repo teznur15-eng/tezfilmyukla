@@ -413,13 +413,13 @@ async def upload_file_via_userbot(user_id: int, target_chat: int | str, filepath
         )
         msg_id = msg.id if msg else 0
         file_id = f"ub_doc_{msg_id}"
-        await client.disconnect()
         return True, msg_id, file_id
     except Exception as e:
         logger.error(f"Userbot upload error: {e}")
+        return False, 0, str(e)
+    finally:
         try:
             await client.disconnect()
         except Exception:
             pass
-        return False, 0, str(e)
 

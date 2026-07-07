@@ -97,10 +97,11 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                 last_time = start_time
                 last_downloaded = 0
 
+                loop = asyncio.get_running_loop()
                 with open(filepath, "wb") as f:
                     async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks
                         if chunk:
-                            f.write(chunk)
+                            await loop.run_in_executor(None, f.write, chunk)
                             downloaded += len(chunk)
 
                             now = time.time()

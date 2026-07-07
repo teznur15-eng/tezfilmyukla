@@ -44,7 +44,7 @@ def main():
     init_db()
 
     # App yaratish
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).concurrent_updates(True).build()
 
     # Commandlar
     app.add_handler(CommandHandler("start", start_handler))

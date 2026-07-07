@@ -21,6 +21,7 @@ from utils.database import (
     get_open_complaints, reply_complaint, get_complaint_by_id,
     search_channel_storage,
     get_detailed_statistics, get_activity_logs_for_report, log_user_action,
+    DB_PATH, get_connection,
 )
 from utils.pdf_generator import PDFBuilder
 
@@ -60,6 +61,7 @@ def _admin_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton("🔐 Adminlar",           callback_data="adm_admins")],
         [InlineKeyboardButton("📢 Majburiy kanal",     callback_data="adm_mandatory"),
          InlineKeyboardButton("🔍 Storage qidirish",   callback_data="adm_search_storage")],
+        [InlineKeyboardButton("💾 Ma'lumotlar Bazasi (DB)", callback_data="adm_db_menu")],
     ])
 
 
@@ -103,6 +105,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "adm_admins":          await _admins_panel(q)
         elif data == "adm_mandatory":       await _mandatory_panel(q)
         elif data == "adm_search_storage":  await _search_storage_prompt(q, context)
+        elif data == "adm_db_menu":         await _db_menu(q)
+        elif data == "adm_db_export_sqlite": await _db_export_sqlite(q, context)
+        elif data == "adm_db_export_json":   await _db_export_json(q, context)
+        elif data == "adm_db_import_prompt": await _db_import_prompt(q, context)
         elif data == "adm_back":            await _admin_main(q)
 
         elif data.startswith("approve_payment_"):
@@ -371,7 +377,186 @@ async def admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("adm_state", None)
         await msg.reply_text("✅ Start xabari uchun rasm / banner sozlamasi yangilandi!")
 
-    elif state.startswith("resolve_"):
+    elif state == "import_db":
+        if not msg.document:
+            await msg.reply_text("⚠️ Iltimos, zaxira (backup) faylini (.json yoki .db formatida) yuboring.")
+            return
+        
+        doc = msg.document
+        filename = doc.file_name.lower()
+        if not (filename.endswith(".json") or filename.endswith(".db") or filename.endswith(".sqlite")):
+            await msg.reply_text("❌ Faqat <code>.json</code> yoki <code>.db</code> / <code>.sqlite</code> zaxira fayllari qo'llab-quvvatlanadi.", parse_mode=H)
+            return
+            
+        await msg.reply_text("⏳ Fayl yuklab olinmoqda va tahlil qilinmoqda...")
+        try:
+            new_file = await context.bot.get_file(doc.file_id)
+            import_path = f"/tmp/{doc.file_unique_id}_{doc.file_name}"
+            await new_file.download_to_drive(import_path)
+            
+            if filename.endswith(".json"):
+                import json
+                with open(import_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                user_list = []
+                if isinstance(data, list):
+                    user_list = data
+                elif isinstance(data, dict) and "users" in data:
+                    user_list = data["users"]
+                else:
+                    await msg.reply_text("❌ Noto'g'ri JSON formati. Baza zaxira fayli ekanligiga ishonch hosil qiling.")
+                    if os.path.exists(import_path): os.remove(import_path)
+                    return
+                
+                added_cnt = 0
+                existed_cnt = 0
+                conn = get_connection()
+                cur = conn.cursor()
+                for u in user_list:
+                    uid = u.get("user_id")
+                    if not uid:
+                        continue
+                    cur.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (uid,))
+                    if cur.fetchone()[0] > 0:
+                        existed_cnt += 1
+                    else:
+                        cur.execute("""
+                        INSERT INTO users (user_id, username, full_name, tariff_id, sub_expires, free_used, bonus_dl, ref_code, ref_count, referred_by, is_banned, created_at, last_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            uid,
+                            u.get("username"),
+                            u.get("full_name"),
+                            u.get("tariff_id", 0),
+                            u.get("sub_expires"),
+                            u.get("free_used", 0),
+                            u.get("bonus_dl", 0),
+                            u.get("ref_code"),
+                            u.get("ref_count", 0),
+                            u.get("referred_by", 0),
+                            u.get("is_banned", 0),
+                            u.get("created_at"),
+                            u.get("last_active")
+                        ))
+                        added_cnt += 1
+                conn.commit()
+                conn.close()
+                
+                context.user_data.pop("adm_state", None)
+                await msg.reply_text(
+                    f"🎉 <b>Baza muvaffaqiyatli import qilindi!</b>\n\n"
+                    f"📊 <b>Natijalar:</b>\n"
+                    f"• Tahlil qilindi: <b>{len(user_list)}</b> ta foydalanuvchi\n"
+                    f"• Yangi qo'shildi: <b>{added_cnt}</b> ta\n"
+                    f"• Eski mavjudlar: <b>{existed_cnt}</b> ta",
+                    parse_mode=H
+                )
+            else:
+                # SQLite
+                import sqlite3
+                import_conn = sqlite3.connect(import_path)
+                import_conn.row_factory = sqlite3.Row
+                import_cur = import_conn.cursor()
+                
+                import_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                if not import_cur.fetchone():
+                    await msg.reply_text("❌ Yuklangan SQLite faylida <code>users</code> jadvali topilmadi.", parse_mode=H)
+                    import_conn.close()
+                    if os.path.exists(import_path): os.remove(import_path)
+                    return
+                
+                import_cur.execute("SELECT * FROM users")
+                user_rows = import_cur.fetchall()
+                
+                added_cnt = 0
+                existed_cnt = 0
+                conn = get_connection()
+                cur = conn.cursor()
+                
+                for row in user_rows:
+                    u = dict(row)
+                    uid = u.get("user_id")
+                    if not uid:
+                        continue
+                    cur.execute("SELECT COUNT(*) FROM users WHERE user_id = ?", (uid,))
+                    if cur.fetchone()[0] > 0:
+                        existed_cnt += 1
+                    else:
+                        cur.execute("""
+                        INSERT INTO users (user_id, username, full_name, tariff_id, sub_expires, free_used, bonus_dl, ref_code, ref_count, referred_by, is_banned, created_at, last_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            uid,
+                            u.get("username"),
+                            u.get("full_name"),
+                            u.get("tariff_id", 0),
+                            u.get("sub_expires"),
+                            u.get("free_used", 0),
+                            u.get("bonus_dl", 0),
+                            u.get("ref_code"),
+                            u.get("ref_count", 0),
+                            u.get("referred_by", 0),
+                            u.get("is_banned", 0),
+                            u.get("created_at"),
+                            u.get("last_active")
+                        ))
+                        added_cnt += 1
+                
+                cs_added = 0
+                try:
+                    import_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='channel_storage'")
+                    if import_cur.fetchone():
+                        import_cur.execute("SELECT * FROM channel_storage")
+                        cs_rows = import_cur.fetchall()
+                        for cs_row in cs_rows:
+                            cs = dict(cs_row)
+                            url = cs.get("url")
+                            if not url:
+                                continue
+                            cur.execute("SELECT COUNT(*) FROM channel_storage WHERE url = ?", (url,))
+                            if cur.fetchone()[0] == 0:
+                                cur.execute("""
+                                INSERT INTO channel_storage (url, msg_id, title, quality, part, file_id, file_size, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    url,
+                                    cs.get("msg_id"),
+                                    cs.get("title"),
+                                    cs.get("quality"),
+                                    cs.get("part", 0),
+                                    cs.get("file_id"),
+                                    cs.get("file_size", 0),
+                                    cs.get("created_at")
+                                ))
+                                cs_added += 1
+                except Exception as cs_err:
+                    logger.warning(f"Could not restore channel_storage: {cs_err}")
+                
+                conn.commit()
+                conn.close()
+                import_conn.close()
+                
+                context.user_data.pop("adm_state", None)
+                cs_info = f"\n• Storage keshiga qo'shildi: <b>{cs_added}</b> ta kino" if cs_added else ""
+                await msg.reply_text(
+                    f"🎉 <b>Baza muvaffaqiyatli import qilindi! (SQLite)</b>\n\n"
+                    f"📊 <b>Natijalar:</b>\n"
+                    f"• Tahlil qilindi: <b>{len(user_rows)}</b> ta foydalanuvchi\n"
+                    f"• Yangi foydalanuvchilar qo'shildi: <b>{added_cnt}</b> ta\n"
+                    f"• Eski mavjudlar: <b>{existed_cnt}</b> ta"
+                    f"{cs_info}",
+                    parse_mode=H
+                )
+            
+            if os.path.exists(import_path):
+                os.remove(import_path)
+                
+        except Exception as e:
+            logger.error(f"Import error: {e}")
+            await msg.reply_text(f"❌ Importda xatolik: {esc(str(e))}", parse_mode=H)
+
+    elif state.startswith("resolve_") :
         try:
             cid = int(state.split("_")[1])
             c   = get_complaint_by_id(cid)
@@ -929,3 +1114,78 @@ async def removeadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     remove_admin(uid)
     await update.message.reply_text(f"✅ Admin o'chirildi: <code>{uid}</code>", parse_mode=H)
+
+
+async def _db_menu(q):
+    await q.edit_message_text(
+        "💾 <b>Ma'lumotlar bazasini himoya qilish (Backup)</b>\n\n"
+        "SQLite fayli har safar bot serveri yangilanganda o'chib ketishi mumkin. Buning oldini olish uchun bazani zaxiralab (backup) oling.\n\n"
+        "<b>Eksport (Yuklab olish):</b>\n"
+        "• 📁 SQLite (.db) faylini yuklab olish — to'liq baza.\n"
+        "• 📄 JSON (.json) faylini yuklab olish — foydalanuvchilar ro'yxati.\n\n"
+        "<b>Import (Qayta tiklash):</b>\n"
+        "• Quyidagi tugmani bosing va botga zaxiralangan <code>.db</code> yoki <code>.json</code> faylini yuboring. Bot tahlil qilib, mavjud bo'lmagan foydalanuvchilarni qo'shib oladi!",
+        parse_mode=H,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📁 SQLite (.db) yuklash", callback_data="adm_db_export_sqlite"),
+             InlineKeyboardButton("📄 JSON (.json) yuklash", callback_data="adm_db_export_json")],
+            [InlineKeyboardButton("📥 Import qilish (Fayl yuborish)", callback_data="adm_db_import_prompt")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="adm_back")]
+        ])
+    )
+
+
+async def _db_export_sqlite(q, context):
+    import shutil
+    try:
+        await q.answer("⏳ SQLite fayli tayyorlanmoqda...", show_alert=False)
+        backup_file = f"/tmp/moviebot_backup.db"
+        shutil.copyfile(DB_PATH, backup_file)
+        
+        with open(backup_file, "rb") as f:
+            await context.bot.send_document(
+                chat_id=q.from_user.id,
+                document=f,
+                filename="moviebot.db",
+                caption="💾 <b>MovieBot To'liq SQLite Bazasi (moviebot.db)</b>",
+                parse_mode=H
+            )
+        os.remove(backup_file)
+    except Exception as e:
+        logger.error(f"SQLite export error: {e}")
+        await q.message.reply_text(f"❌ Eksportda xatolik: {esc(str(e))}", parse_mode=H)
+
+
+async def _db_export_json(q, context):
+    import json
+    try:
+        await q.answer("⏳ JSON fayli tayyorlanmoqda...", show_alert=False)
+        users = get_all_users()
+        backup_data = {"users": users}
+        json_path = f"/tmp/users_backup.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2)
+        
+        with open(json_path, "rb") as f:
+            await context.bot.send_document(
+                chat_id=q.from_user.id,
+                document=f,
+                filename="users_backup.json",
+                caption="💾 <b>MovieBot Foydalanuvchilar Ro'yxati (JSON)</b>",
+                parse_mode=H
+            )
+        os.remove(json_path)
+    except Exception as e:
+        logger.error(f"JSON export error: {e}")
+        await q.message.reply_text(f"❌ Eksportda xatolik: {esc(str(e))}", parse_mode=H)
+
+
+async def _db_import_prompt(q, context):
+    context.user_data["adm_state"] = "import_db"
+    await q.edit_message_text(
+        "📥 <b>Ma'lumotlar bazasini qayta tiklash (Import)</b>\n\n"
+        "Botga oldindan zaxiralangan <code>.db</code> (SQLite) yoki <code>.json</code> formatidagi faylni yuboring.\n\n"
+        "Bot faylni tahlil qilib, mavjud bo'lmagan foydalanuvchilar va ma'lumotlarni joriy bazaga avtomatik qo'shib (merge qilib) oladi.",
+        parse_mode=H,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="adm_db_menu")]])
+    )
