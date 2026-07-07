@@ -85,7 +85,17 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
     """
     filepath = os.path.join(DOWNLOAD_DIR, filename)
     try:
-        async with aiohttp.ClientSession() as session:
+        from urllib.parse import urlparse
+        parsed_url = urlparse(url)
+        referer = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Referer": referer,
+            "Connection": "keep-alive",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=1800) as resp:
                 if resp.status != 200:
                     logger.error(f"Download failed status {resp.status} for {url}")
@@ -128,7 +138,7 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                 loop = asyncio.get_running_loop()
                 try:
                     with open(filepath, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(128 * 1024):  # 128KB chunks for steady streaming and accurate progress
+                        async for chunk in resp.content.iter_chunked(256 * 1024):  # 256KB chunks for steady streaming and accurate progress
                             if chunk:
                                 await loop.run_in_executor(None, f.write, chunk)
                                 downloaded += len(chunk)
