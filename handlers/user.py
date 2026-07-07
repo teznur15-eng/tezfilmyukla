@@ -366,7 +366,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "disconnect_userbot":
             from utils.database import disconnect_userbot
+            from handlers.userbot import stop_userbot_for_user
             disconnect_userbot(user.id)
+            await stop_userbot_for_user(user.id)
             await q.edit_message_text(
                 "✅ Userbot uzildi.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")]])

@@ -138,7 +138,7 @@ async def download_file(url: str, filename: str, progress_cb=None) -> str:
                 loop = asyncio.get_running_loop()
                 try:
                     with open(filepath, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(256 * 1024):  # 256KB chunks for steady streaming and accurate progress
+                        async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks for high throughput and stable speed
                             if chunk:
                                 await loop.run_in_executor(None, f.write, chunk)
                                 downloaded += len(chunk)

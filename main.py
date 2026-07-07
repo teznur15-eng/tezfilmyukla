@@ -33,6 +33,12 @@ from handlers.userbot import (
 )
 
 
+async def post_init(application):
+    import asyncio
+    from handlers.userbot import start_userbot_manager
+    asyncio.create_task(start_userbot_manager(application))
+
+
 def main():
     token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token or token == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
@@ -44,7 +50,7 @@ def main():
     init_db()
 
     # App yaratish
-    app = ApplicationBuilder().token(token).concurrent_updates(True).build()
+    app = ApplicationBuilder().token(token).concurrent_updates(True).post_init(post_init).build()
 
     # Commandlar
     app.add_handler(CommandHandler("start", start_handler))

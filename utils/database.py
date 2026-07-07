@@ -679,6 +679,15 @@ def get_userbot_session(user_id: int) -> dict:
     return res
 
 
+def get_all_userbot_sessions() -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM userbot_sessions")
+    res = rows_to_list(cur.fetchall())
+    conn.close()
+    return res
+
+
 def disconnect_userbot(user_id: int):
     conn = get_connection()
     conn.execute("DELETE FROM userbot_sessions WHERE user_id = ?", (user_id,))

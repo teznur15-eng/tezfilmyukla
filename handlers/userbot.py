@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 from utils.database import (
-    save_userbot_session, get_userbot_session, disconnect_userbot, upsert_user
+    save_userbot_session, get_userbot_session, get_all_userbot_sessions, disconnect_userbot, upsert_user
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ async def disconnect_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     disconnect_userbot(user.id)
     userbot_states.pop(user.id, None)
     userbot_temp.pop(user.id, None)
+    await stop_userbot_for_user(user.id)
     await update.message.reply_text(
         "✅ <b>Userbot muvaffaqiyatli uzildi!</b>\n\nQayta ulash uchun /connect_api yuboring.",
         parse_mode=H
@@ -220,6 +221,7 @@ async def userbot_message_handler(update: Update, context: ContextTypes.DEFAULT_
             )
             userbot_states.pop(user.id, None)
             userbot_temp.pop(user.id, None)
+            asyncio.create_task(start_userbot_for_user(user.id, context.application))
         elif result == "2fa":
             userbot_states[user.id] = "waiting_password"
             await wait.edit_text(
@@ -250,6 +252,7 @@ async def userbot_message_handler(update: Update, context: ContextTypes.DEFAULT_
             )
             userbot_states.pop(user.id, None)
             userbot_temp.pop(user.id, None)
+            asyncio.create_task(start_userbot_for_user(user.id, context.application))
         else:
             await wait.edit_text(
                 f"❌ 2FA Parol xatosi: <code>{esc(err)}</code>\n\nQaytadan: /connect_api",
@@ -422,4 +425,160 @@ async def upload_file_via_userbot(user_id: int, target_chat: int | str, filepath
             await client.disconnect()
         except Exception:
             pass
+
+
+# ─── USERBOT BACKGROUND AUTOMATION SYSTEM ─────────────────
+
+active_clients: dict = {}  # user_id -> TelegramClient
+reaction_cache: set = set()
+
+
+def register_userbot_handlers(client, user_id: int, application=None):
+    from telethon import events
+    from telethon.tl.types import UpdateMessageReactions, MessageReactions
+
+    # 1. New Message Reply Handler
+    # This detects when the userbot owner replies to a video/media with '/ok' or '🔥'
+    @client.on(events.NewMessage(outgoing=True))
+    async def handle_outgoing_reply(event):
+        if not event.is_reply:
+            return
+            
+        text = (event.text or "").strip().lower()
+        if text not in ["/ok", "🔥", "ok", "yukla", "save", "saqla"]:
+            return
+            
+        try:
+            replied_msg = await event.get_reply_message()
+            if not replied_msg or not replied_msg.media:
+                return
+                
+            status_msg = await event.reply("⚡️ <b>Kino saqlanmoqda...</b>", parse_mode="html")
+            
+            # Send copy of the media to Saved Messages ('me')
+            await client.send_message('me', replied_msg)
+            
+            await status_msg.edit("✅ <b>Kino muvaffaqiyatli Saqlangan xabarlar (Saved Messages) papkangizga saqlandi!</b>", parse_mode="html")
+        except Exception as e:
+            logger.error(f"Error in outgoing reply handler for user {user_id}: {e}")
+            try:
+                await event.reply(f"❌ <b>Xatolik yuz berdi:</b>\n<code>{esc(str(e))}</code>", parse_mode="html")
+            except Exception:
+                pass
+
+    # 2. Raw Update Reaction Handler
+    # This detects when the user reacts with 🔥 on a message in channels/chats
+    @client.on(events.Raw)
+    async def handle_raw_reaction(event):
+        if not isinstance(event, UpdateMessageReactions):
+            return
+            
+        try:
+            peer = event.peer
+            msg_id = event.msg_id
+            
+            cache_key = f"react_{user_id}_{msg_id}"
+            if cache_key in reaction_cache:
+                return
+                
+            msg = await client.get_messages(peer, ids=msg_id)
+            if not msg or not msg.media:
+                return
+                
+            has_fire = False
+            if msg.reactions:
+                for r in msg.reactions.results:
+                    if hasattr(r.reaction, 'emoticon') and r.reaction.emoticon == '🔥':
+                        if r.count > 0:
+                            has_fire = True
+                            break
+                            
+            if not has_fire:
+                return
+                
+            # Verify if we are the one who reacted with 🔥 to avoid triggering on other users' reactions
+            from telethon.tl.functions.messages import GetMessageReactionsListRequest
+            try:
+                res = await client(GetMessageReactionsListRequest(
+                    peer=peer,
+                    id=msg_id,
+                    limit=10
+                ))
+                me = await client.get_me()
+                user_reacted = any(x.peer_id.user_id == me.id for x in res.users if hasattr(x.peer_id, 'user_id'))
+                if not user_reacted:
+                    return
+            except Exception as re_err:
+                logger.debug(f"Could not verify reaction owner, proceeding: {re_err}")
+                pass
+                
+            # Prevent duplicate actions
+            reaction_cache.add(cache_key)
+            if len(reaction_cache) > 5000:
+                reaction_cache.clear() # Prevent memory bloat
+                
+            # Send copy of the media to Saved Messages ('me')
+            await client.send_message('me', msg)
+            await client.send_message('me', "🔥 <b>Reaksiya orqali saqlangan video!</b>", parse_mode="html")
+            logger.info(f"Successfully processed reaction download for user {user_id}, msg {msg_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in reaction handler for user {user_id}: {e}")
+
+
+async def start_userbot_for_user(user_id: int, application=None):
+    if user_id in active_clients:
+        await stop_userbot_for_user(user_id)
+        
+    session_row = get_userbot_session(user_id)
+    if not session_row or not session_row.get("session_string"):
+        return False
+        
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        
+        client = TelegramClient(
+            StringSession(session_row["session_string"]),
+            int(session_row["api_id"]),
+            session_row["api_hash"]
+        )
+        await client.connect()
+        if not await client.is_user_authorized():
+            logger.warning(f"Userbot session for {user_id} is invalid or expired.")
+            await client.disconnect()
+            return False
+            
+        register_userbot_handlers(client, user_id, application)
+        active_clients[user_id] = client
+        logger.info(f"Background userbot started for user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error starting userbot for {user_id}: {e}")
+        return False
+
+
+async def stop_userbot_for_user(user_id: int):
+    client = active_clients.pop(user_id, None)
+    if client:
+        try:
+            await client.disconnect()
+            logger.info(f"Userbot for {user_id} stopped.")
+            return True
+        except Exception as e:
+            logger.error(f"Error disconnecting userbot for {user_id}: {e}")
+    return False
+
+
+async def start_userbot_manager(application):
+    logger.info("Initializing Userbot Background Manager...")
+    try:
+        sessions = get_all_userbot_sessions()
+        logger.info(f"Found {len(sessions)} saved userbot sessions. Loading background clients...")
+        for row in sessions:
+            user_id = row["user_id"]
+            asyncio.create_task(start_userbot_for_user(user_id, application))
+    except Exception as e:
+        logger.error(f"Error starting Userbot Background Manager: {e}")
+
 
