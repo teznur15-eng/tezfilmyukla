@@ -433,6 +433,58 @@ active_clients: dict = {}  # user_id -> TelegramClient
 reaction_cache: set = set()
 
 
+async def send_media_safely(client, to_peer, msg, caption=None, status_msg=None):
+    import os
+    import tempfile
+    try:
+        # Harakat qilib ko'ramiz oddiy forward qilishga (faqat ruxsat berilgan chatlarda ishlaydi)
+        await client.send_message(to_peer, msg)
+        if caption:
+            await client.send_message(to_peer, caption, parse_mode="html")
+        return True
+    except Exception as e:
+        err_str = str(e).lower()
+        # Agar kanal/guruh himoyalangan bo'lsa (Restrict Saving Content yoqilgan bo'lsa)
+        if "forward" in err_str or "protect" in err_str or "restrict" in err_str or "media" in err_str or "privacy" in err_str:
+            logger.info("Forwarding failed due to chat protection. Initiating secure cloud-copy...")
+            if status_msg:
+                try:
+                    await status_msg.edit("🔒 <b>Kanal himoyalangan ekan. Yuklab olib, to'g'ridan-to'g'ri yuborish tizimi ishga tushdi...</b> (Hozir yuklab olinmoqda 🚀)", parse_mode="html")
+                except Exception:
+                    pass
+            try:
+                suffix = ""
+                if msg.file and msg.file.ext:
+                    suffix = msg.file.ext
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp_path = tmp.name
+                
+                # Telethon orqali serverga tezkor yuklab olamiz
+                downloaded_file = await client.download_media(msg, file=tmp_path)
+                if downloaded_file and os.path.exists(downloaded_file):
+                    if status_msg:
+                        try:
+                            await status_msg.edit("⚡️ <b>Saqlangan xabarlar (Saved Messages) papkangizga yuklanmoqda...</b>", parse_mode="html")
+                        except Exception:
+                            pass
+                    
+                    actual_caption = caption or (msg.text or "")
+                    # Uni yangi fayl sifatida yuboramiz - bu Telegram forward cheklovlarini to'liq aylanib o'tadi!
+                    await client.send_file(to_peer, downloaded_file, caption=actual_caption, parse_mode="html")
+                    
+                    # Tozalash
+                    try:
+                        os.remove(downloaded_file)
+                    except Exception:
+                        pass
+                    return True
+            except Exception as inner_err:
+                logger.error(f"Failed in secure cloud-copy: {inner_err}")
+                raise inner_err
+        raise e
+
+
 def register_userbot_handlers(client, user_id: int, application=None):
     from telethon import events
     from telethon.tl.types import UpdateMessageReactions, MessageReactions
@@ -455,8 +507,8 @@ def register_userbot_handlers(client, user_id: int, application=None):
                 
             status_msg = await event.reply("⚡️ <b>Kino saqlanmoqda...</b>", parse_mode="html")
             
-            # Send copy of the media to Saved Messages ('me')
-            await client.send_message('me', replied_msg)
+            # Send copy safely to Saved Messages ('me')
+            await send_media_safely(client, 'me', replied_msg, status_msg=status_msg)
             
             await status_msg.edit("✅ <b>Kino muvaffaqiyatli Saqlangan xabarlar (Saved Messages) papkangizga saqlandi!</b>", parse_mode="html")
         except Exception as e:
@@ -517,9 +569,13 @@ def register_userbot_handlers(client, user_id: int, application=None):
             if len(reaction_cache) > 5000:
                 reaction_cache.clear() # Prevent memory bloat
                 
-            # Send copy of the media to Saved Messages ('me')
-            await client.send_message('me', msg)
-            await client.send_message('me', "🔥 <b>Reaksiya orqali saqlangan video!</b>", parse_mode="html")
+            # Send copy safely to Saved Messages ('me')
+            await send_media_safely(
+                client, 
+                'me', 
+                msg, 
+                caption="🔥 <b>Reaksiya orqali saqlangan video!</b>"
+            )
             logger.info(f"Successfully processed reaction download for user {user_id}, msg {msg_id}")
             
         except Exception as e:
