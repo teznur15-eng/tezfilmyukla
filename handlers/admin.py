@@ -230,6 +230,32 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=H,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_settings")]])
             )
+        elif data == "adm_set_scout_token":
+            context.user_data["adm_state"] = "set_scout_token"
+            cur = get_setting("scout_bot_token", "")
+            masked = (cur[:15] + "...") if cur else "sozlanmagan"
+            await q.edit_message_text(
+                f"🕵️‍♂️ <b>Alohida Scout Bot Tokenini sozlash</b>\n\n"
+                f"Joriy: <code>{esc(masked)}</code>\n\n"
+                f"Yangi alohida Telegram Bot tokenini yuboring:\n"
+                f"(Masalan: <code>1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ</code>)\n\n"
+                f"O'chirish va to'xtatish uchun: <code>0</code> deb yozing.",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_settings")]])
+            )
+        elif data == "adm_set_scout_gemini":
+            context.user_data["adm_state"] = "set_scout_gemini"
+            cur = get_setting("scout_gemini_key", "")
+            masked = (cur[:15] + "...") if cur else "sozlanmagan"
+            await q.edit_message_text(
+                f"🔑 <b>Alohida Scout Gemini API kalitini sozlash</b>\n\n"
+                f"Joriy: <code>{esc(masked)}</code>\n\n"
+                f"Yangi Gemini API Key yuboring:\n"
+                f"(Masalan: <code>AIzaSyD...</code>)\n\n"
+                f"O'chirish va tizim default kalitidan foydalanish uchun: <code>0</code> deb yozing.",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="adm_settings")]])
+            )
         elif data == "adm_maintenance_on":
             set_setting("maintenance_mode","1")
             await q.answer("🔧 Texnik rejim yoqildi!", show_alert=True)
@@ -376,6 +402,49 @@ async def admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_setting("start_photo", val)
         context.user_data.pop("adm_state", None)
         await msg.reply_text("✅ Start xabari uchun rasm / banner sozlamasi yangilandi!")
+
+    elif state == "set_scout_token":
+        val = "" if text == "0" else text
+        set_setting("scout_bot_token", val)
+        context.user_data.pop("adm_state", None)
+        
+        # Dynamically start/restart the separate scout bot in background
+        from handlers.scout_bot_manager import start_scout_bot
+        import asyncio
+        asyncio.create_task(start_scout_bot(context.application))
+        
+        if val:
+            await msg.reply_text(
+                "✅ <b>Scout Bot Token muvaffaqiyatli saqlandi!</b>\n\n"
+                "Alohida bot fonda muvaffaqiyatli ishga tushirildi. Endi o'sha alohida botga o'tib /start buyrug'ini yuboring.",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Sozlamalar", callback_data="adm_settings")]])
+            )
+        else:
+            await msg.reply_text(
+                "✅ <b>Alohida Scout Bot to'xtatildi va token o'chirildi!</b>",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Sozlamalar", callback_data="adm_settings")]])
+            )
+
+    elif state == "set_scout_gemini":
+        val = "" if text == "0" else text
+        set_setting("scout_gemini_key", val)
+        context.user_data.pop("adm_state", None)
+        
+        if val:
+            await msg.reply_text(
+                "✅ <b>Scout Gemini API kaliti saqlandi!</b>\n\n"
+                "Endi alohida Scouting Bot yangi Gemini kaliti orqali so'rovlar yuboradi.",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Sozlamalar", callback_data="adm_settings")]])
+            )
+        else:
+            await msg.reply_text(
+                "✅ <b>Scout Gemini API kaliti o'chirildi!</b> (Tizim endi default kalitga qaytadi.)",
+                parse_mode=H,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Sozlamalar", callback_data="adm_settings")]])
+            )
 
     elif state == "import_db":
         if not msg.document:
@@ -937,19 +1006,29 @@ async def _settings(q):
     maint = get_setting("maintenance_mode","0")
     botun = get_setting("bot_username","—")
     sphoto = get_setting("start_photo", "")
+    scout_token = get_setting("scout_bot_token", "")
+    scout_gemini = get_setting("scout_gemini_key", "")
+    
+    scout_token_status = f"@{esc(scout_token.split(':')[0])[:10]}..." if scout_token else "sozlanmagan"
+    scout_gemini_status = f"{esc(scout_gemini[:8])}..." if scout_gemini else "default key (system)"
+    
     maint_icon = "🔴 Yoqilgan" if maint == "1" else "🟢 O'chirilgan"
     await q.edit_message_text(
         f"⚙️ <b>Sozlamalar</b>\n\n"
         f"🆓 Bepul limit: <b>{free} ta</b>\n"
         f"🖼 Start Rasmi: <b>{'Sozlingan' if sphoto else 'Default banner'}</b>\n"
         f"🔧 Texnik rejim: <b>{maint_icon}</b>\n"
-        f"🤖 Bot username: <b>@{esc(botun)}</b>",
+        f"🤖 Bot username: <b>@{esc(botun)}</b>\n"
+        f"🕵️‍♂️ <b>Alohida Scout Bot:</b> <code>{scout_token_status}</code>\n"
+        f"🔑 <b>Scout Gemini Key:</b> <code>{scout_gemini_status}</code>",
         parse_mode=H,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆓 Bepul limit", callback_data="adm_set_free")],
             [InlineKeyboardButton("🖼 Start Banner Rasm", callback_data="adm_set_start_photo")],
             [InlineKeyboardButton("🤖 Bot username", callback_data="adm_set_botusername")],
             [InlineKeyboardButton("👋 Welcome xabari", callback_data="adm_set_welcome")],
+            [InlineKeyboardButton("🕵️‍♂️ Scout Bot Token", callback_data="adm_set_scout_token"),
+             InlineKeyboardButton("🔑 Scout Gemini Key", callback_data="adm_set_scout_gemini")],
             [InlineKeyboardButton(
                 "🔧 Texnik rejim yoq" if maint == "0" else "🟢 Texnik rejimni o'chir",
                 callback_data="adm_maintenance_on" if maint == "0" else "adm_maintenance_off"

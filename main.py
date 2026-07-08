@@ -36,7 +36,11 @@ from handlers.userbot import (
 async def post_init(application):
     import asyncio
     from handlers.userbot import start_userbot_manager
+    from handlers.scout_agent import start_all_scout_agents
+    from handlers.scout_bot_manager import start_scout_bot
     asyncio.create_task(start_userbot_manager(application))
+    asyncio.create_task(start_all_scout_agents(application))
+    asyncio.create_task(start_scout_bot(application))
 
 
 def main():

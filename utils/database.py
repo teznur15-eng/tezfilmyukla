@@ -166,6 +166,37 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scouting_settings (
+        user_id INTEGER PRIMARY KEY,
+        is_active INTEGER DEFAULT 0,
+        categories TEXT,
+        pitch_offer TEXT,
+        daily_limit INTEGER DEFAULT 20,
+        min_delay INTEGER DEFAULT 300,
+        max_delay INTEGER DEFAULT 900,
+        logs TEXT DEFAULT '[]'
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scouting_leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        business_name TEXT,
+        industry TEXT,
+        phone TEXT,
+        address TEXT,
+        source TEXT,
+        status TEXT DEFAULT 'found',
+        tg_username TEXT,
+        pitch_sent TEXT,
+        last_message_id INTEGER,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
     conn.commit()
 
     # Boshlang'ich default sozlamalar
@@ -965,4 +996,158 @@ def get_detailed_statistics() -> dict:
         },
         "reviews": rev_summary
     }
+
+
+# ─── AI SCOUTING AGENT DATABASE HELPERS ───────────────────
+
+def get_scouting_settings(user_id: int) -> dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM scouting_settings WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        default_cats = "19l suv yetkazib berish,kuler suv,oshxona jihozlari ishlab chiqarish,nerjaveyka sex,xo'jalik mollari optom,plastmassa sex,maishiy kimyo zavodi,mini pech ishlab chiqaruvchilar"
+        default_pitch = "Eng sodda va qulay Telegram Bot, atigi 3 kunda jami $100"
+        cur.execute("""
+            INSERT INTO scouting_settings (user_id, is_active, categories, pitch_offer, daily_limit, min_delay, max_delay, logs)
+            VALUES (?, 0, ?, ?, 20, 300, 900, '[]')
+        """, (user_id, default_cats, default_pitch))
+        conn.commit()
+        cur.execute("SELECT * FROM scouting_settings WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+    
+    res = dict(row) if row else {}
+    conn.close()
+    return res
+
+
+def save_scouting_settings(user_id: int, is_active: int, categories: str, pitch_offer: str, daily_limit: int, min_delay: int, max_delay: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR REPLACE INTO scouting_settings (user_id, is_active, categories, pitch_offer, daily_limit, min_delay, max_delay, logs)
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT logs FROM scouting_settings WHERE user_id = ?), '[]'))
+    """, (user_id, is_active, categories, pitch_offer, daily_limit, min_delay, max_delay, user_id))
+    conn.commit()
+    conn.close()
+
+
+def add_scouting_lead(user_id: int, business_name: str, industry: str, phone: str, address: str, source: str, status: str = 'found', tg_username: str = None) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    # Check if we already have this phone or name in our database for this user
+    cur.execute("SELECT id FROM scouting_leads WHERE user_id = ? AND (phone = ? OR (business_name = ? AND industry = ?))", (user_id, phone, business_name, industry))
+    row = cur.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+        
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+        INSERT INTO scouting_leads (user_id, business_name, industry, phone, address, source, status, tg_username, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (user_id, business_name, industry, phone, address, source, status, tg_username, now, now))
+    lead_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return lead_id
+
+
+def update_scouting_lead_status(lead_id: int, status: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("UPDATE scouting_leads SET status = ?, updated_at = ? WHERE id = ?", (status, now, lead_id))
+    conn.commit()
+    conn.close()
+
+
+def update_scouting_lead_pitch(lead_id: int, pitch_sent: str, status: str = 'pitched'):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("UPDATE scouting_leads SET pitch_sent = ?, status = ?, updated_at = ? WHERE id = ?", (pitch_sent, status, now, lead_id))
+    conn.commit()
+    conn.close()
+
+
+def get_scouting_leads(user_id: int, status: str = None, limit: int = 50) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    if status:
+        cur.execute("SELECT * FROM scouting_leads WHERE user_id = ? AND status = ? ORDER BY id DESC LIMIT ?", (user_id, status, limit))
+    else:
+        cur.execute("SELECT * FROM scouting_leads WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows_to_list(rows)
+
+
+def get_scouting_leads_for_user(user_id: int, status: str = None, limit: int = 50) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    if status:
+        cur.execute("SELECT * FROM scouting_leads WHERE user_id = ? AND status = ? ORDER BY id DESC LIMIT ?", (user_id, status, limit))
+    else:
+        cur.execute("SELECT * FROM scouting_leads WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows_to_list(rows)
+
+
+def get_all_active_scouting_settings() -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM scouting_settings WHERE is_active = 1")
+    rows = cur.fetchall()
+    conn.close()
+    return rows_to_list(rows)
+
+
+def add_scouting_log(user_id: int, log_text: str):
+    import json
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT logs FROM scouting_settings WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    logs_list = []
+    if row and row[0]:
+        try:
+            logs_list = json.loads(row[0])
+        except Exception:
+            pass
+            
+    now_str = datetime.now().strftime("%H:%M:%S")
+    logs_list.insert(0, f"[{now_str}] {log_text}")
+    # Keep last 50 logs
+    logs_list = logs_list[:50]
+    
+    cur.execute("UPDATE scouting_settings SET logs = ? WHERE user_id = ?", (json.dumps(logs_list, ensure_ascii=False), user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_scouting_logs(user_id: int, limit: int = 15) -> list[str]:
+    import json
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT logs FROM scouting_settings WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0]:
+        try:
+            logs = json.loads(row[0])
+            return logs[:limit]
+        except Exception:
+            pass
+    return []
+
+
+def clear_scouting_logs(user_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE scouting_settings SET logs = '[]' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
 

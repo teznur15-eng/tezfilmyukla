@@ -134,6 +134,7 @@ def _main_kb(user_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton("📋 Shikoyat",         callback_data="complaint")],
         [InlineKeyboardButton("🔐 Userbot (50MB+)",  callback_data="userbot_menu"),
          InlineKeyboardButton("⭐ Sharhlar & Fikrlar", callback_data="reviews_menu")],
+        [InlineKeyboardButton("🕵️‍♂️ AI Scouting Agent", callback_data="scout_menu")],
         [InlineKeyboardButton("ℹ️ Yordam / FAQ",     callback_data="help")],
     ]
     if check_subscription(user_id) or is_admin(user_id):
@@ -314,6 +315,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=H,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Bekor qilish", callback_data="reviews_menu")]])
             )
+
+        elif data == "scout_menu" or data.startswith("scout_"):
+            from handlers.scout_handler import handle_scout_callbacks
+            if await handle_scout_callbacks(update, context):
+                return
 
         elif data == "userbot_menu":
             from handlers.userbot import show_userbot_menu_panel
@@ -744,6 +750,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Userbot jarayoni
     from handlers.userbot import userbot_message_handler
     if await userbot_message_handler(update, context):
+        return
+
+    # Scouting Agent sozlamalari
+    from handlers.scout_handler import handle_scout_messages
+    if await handle_scout_messages(update, context):
         return
 
     # To'lov screenshoti
