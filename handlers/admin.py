@@ -68,6 +68,28 @@ def _admin_kb() -> InlineKeyboardMarkup:
 # ─── /admin ──────────────────────────────────────────────
 
 @admin_only
+async def scout_settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    scout_token = get_setting("scout_bot_token", "")
+    scout_gemini = get_setting("scout_gemini_key", "")
+    
+    scout_token_status = f"@{esc(scout_token.split(':')[0])[:10]}..." if scout_token else "sozlanmagan"
+    scout_gemini_status = f"{esc(scout_gemini[:8])}..." if scout_gemini else "default key (system)"
+    
+    await update.message.reply_text(
+        f"🕵️‍♂️ <b>Alohida Scout Bot Sozlamalari</b>\n\n"
+        f"🕵️‍♂️ <b>Alohida Scout Bot:</b> <code>{scout_token_status}</code>\n"
+        f"🔑 <b>Scout Gemini Key:</b> <code>{scout_gemini_status}</code>\n\n"
+        f"Ushbu sozlamalarni o'zgartirish uchun quyidagi tugmalardan foydalaning:",
+        parse_mode=H,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🕵️‍♂️ Scout Bot Token", callback_data="adm_set_scout_token"),
+             InlineKeyboardButton("🔑 Scout Gemini Key", callback_data="adm_set_scout_gemini")],
+            [InlineKeyboardButton("🔙 Admin Panel", callback_data="adm_back")]
+        ])
+    )
+
+
+@admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total   = get_users_count()
     active  = get_active_users_count()

@@ -60,11 +60,19 @@ async def start_scout_bot(main_application=None):
         
         # Initialize and run polling asynchronously without blocking the main thread
         await app.initialize()
+        bot_info = await app.bot.get_me()
         await app.start()
         await app.updater.start_polling()
         
         scout_bot_app = app
-        logger.info("🚀 Separate Scout Bot is now running and polling.")
+        
+        print("\n==================================================")
+        print(f"🕵️‍♂️ ALOHIDA SCOUT BOT ISHGA TUSHDI: @{bot_info.username}")
+        print(f"🆔 Scout Bot ID: {bot_info.id}")
+        print(f"⚡ Status: FAOL (Polling rejimida)")
+        print("==================================================\n")
+        
+        logger.info(f"🚀 Separate Scout Bot @{bot_info.username} is now running and polling.")
         return True
     except Exception as e:
         logger.error(f"Failed to start separate Scout Bot: {e}", exc_info=True)

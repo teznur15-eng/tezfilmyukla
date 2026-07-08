@@ -26,7 +26,7 @@ from handlers.user import (
     start_handler, button_handler, message_handler
 )
 from handlers.admin import (
-    admin_panel, admin_callback, admin_message, ban_cmd, unban_cmd, sub_cmd, addadmin_cmd, removeadmin_cmd
+    admin_panel, scout_settings_command, admin_callback, admin_message, ban_cmd, unban_cmd, sub_cmd, addadmin_cmd, removeadmin_cmd
 )
 from handlers.userbot import (
     connect_command, disconnect_command
@@ -38,6 +38,18 @@ async def post_init(application):
     from handlers.userbot import start_userbot_manager
     from handlers.scout_agent import start_all_scout_agents
     from handlers.scout_bot_manager import start_scout_bot
+    
+    try:
+        bot_info = await application.bot.get_me()
+        print("\n==================================================")
+        print(f"🤖 ASOSIY BOT ISHGA TUSHDI: @{bot_info.username}")
+        print(f"🆔 Bot ID: {bot_info.id}")
+        print(f"⚡ Status: FAOL (Polling rejimida)")
+        print("==================================================\n")
+    except Exception as e:
+        logger.error(f"Asosiy bot ma'lumotlarini olishda xatolik: {e}")
+        print("\n🚀 Asosiy bot ishga tushdi, lekin ma'lumotlarini yuklab bo'lmadi.\n")
+        
     asyncio.create_task(start_userbot_manager(application))
     asyncio.create_task(start_all_scout_agents(application))
     asyncio.create_task(start_scout_bot(application))
@@ -59,6 +71,8 @@ def main():
     # Commandlar
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("scoutsettings", scout_settings_command))
+    app.add_handler(CommandHandler("scoutbot", scout_settings_command))
     app.add_handler(CommandHandler("connect_api", connect_command))
     app.add_handler(CommandHandler("disconnect", disconnect_command))
     app.add_handler(CommandHandler("ban", ban_cmd))
